@@ -178,27 +178,24 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
 #    print("✅ ETL - Transform and Prepare script completed successfully!") # Final success message
 
 # Example Usage (for testing and demonstration)
-# Example Usage (for testing and demonstration)
 if __name__ == '__main__':
     # Create sample data and portfolio (replace with your actual data loading and portfolio setup)
-    dates = pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08', '2024-01-09', '2024-01-10']) # DatetimeIndex
+    dates = pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08', '2024-01-09', '2024-01-10'])
     tickers = ['AAPL', 'GOOG']
     # Create MultiIndex for columns - Ticker and OHLCV
     columns = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Volume']], names=['Ticker', 'OHLCV'])
     data_values = np.random.rand(len(dates), len(tickers) * 5) #  Data values adjusted - now one row per date
     sample_data = pd.DataFrame(data_values, index=dates, columns=columns) # dates as DatetimeIndex
 
-    print_dataframe_debugging_info(sample_data)
-
     sample_data.index.name = 'Date' # Set index name explicitly to 'Date' - although it will be set by default
 
     initial_cash = 100000
     sample_portfolio = Portfolio(initial_cash, tickers)
 
-
     # Create Simulation instance
     simulation = Simulation(sample_data, sample_portfolio)
 
+    
     print("--- Simulation Start ---")
     window_size = 5
     initial_data_window = simulation.start(window_size)
@@ -208,18 +205,21 @@ if __name__ == '__main__':
         print_dataframe_debugging_info(initial_data_window, name="Initial Data Window")
 
 
-    print("\n--- Simulation Steps ---")
-    for _ in range(3): # Take a few steps
+    print("\n--- Simulation Steps (Running to End) ---")
+    step_count = 0 # Counter for steps taken
+    while True: # Run steps until simulation finishes
         current_data_window = simulation.step(window_size)
         if current_data_window is not None:
-            print(f"\nData Window at Date: {simulation.current_date.date()}")
+            step_count += 1
+            print(f"\nData Window at Date: {simulation.current_date.date()} (Step {step_count})")
             print(current_data_window)
-            print_dataframe_debugging_info(current_data_window, name=f"Data Window at Date: {simulation.current_date.date()}")
+            print_dataframe_debugging_info(current_data_window, name=f"Data Window at Date: {simulation.current_date.date()} (Step {step_count})")
         else:
-            print("Simulation ended.")
-            break
+            print("Simulation ended within loop.")
+            break # Exit loop when step() returns None
 
     print("\n--- Simulation End ---")
-    print(f"Is simulation finished? {simulation.is_simulation_finished}")
+    print(f"Is simulation finished? {simulation.is_simulation_finished}") # Should now be True
+    print(f"Total steps taken: {step_count}") # Print the number of steps actually taken
     print(f"Current portfolio cash: ${simulation.portfolio.cash:.2f}")
     print(f"Current portfolio holdings: {simulation.portfolio.holdings}")
