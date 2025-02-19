@@ -159,67 +159,26 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
 
     model = ModelData(TICKERS, RAW_DATA_DIR)
     model.save_to_csv('model_data/stock.csv')
-    model.create_simulations(365, 10000)
+    simulations = model.create_simulations(365, 10000)
     
+    os.makedirs('simulations', exist_ok=True)
+    count = 0
+    for sim in simulations:
+        count += 1
+        sim.start(60).to_csv(f'simulations/{count}.csv')
+
     return
 
 
-
-#if __name__ == '__main__':
-#    print("\n🎉 Starting Stock Data Transformation and Preparation (Transform Script)...")
-
-#    train_data, eval_data = load_and_transform_stock_data(RAW_DATA_DIR, TRANSFORMED_DATA_DIR, tickers=TICKERS, feature_columns=FEATURE_COLUMNS_STOCK_DATA, n_steps=N_STEPS) # Load and transform
-#    if train_data and eval_data:
-#        save_transformed_and_prepared_data(train_data, eval_data) # Call the new combined saving function
-#    else:
-#        print("❌ Transformation process failed. Prepared data not saved.")
-
-#    print("Transformed and prepared data saved to directories specified in config.py") # Update message
-#    print("✅ ETL - Transform and Prepare script completed successfully!") # Final success message
-
-# Example Usage (for testing and demonstration)
 if __name__ == '__main__':
-    # Create sample data and portfolio (replace with your actual data loading and portfolio setup)
-    dates = pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08', '2024-01-09', '2024-01-10'])
-    tickers = ['AAPL', 'GOOG']
-    # Create MultiIndex for columns - Ticker and OHLCV
-    columns = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Volume']], names=['Ticker', 'OHLCV'])
-    data_values = np.random.rand(len(dates), len(tickers) * 5) #  Data values adjusted - now one row per date
-    sample_data = pd.DataFrame(data_values, index=dates, columns=columns) # dates as DatetimeIndex
+    print("\n🎉 Starting Stock Data Transformation and Preparation (Transform Script)...")
 
-    sample_data.index.name = 'Date' # Set index name explicitly to 'Date' - although it will be set by default
+    train_data, eval_data = load_and_transform_stock_data(RAW_DATA_DIR, TRANSFORMED_DATA_DIR, tickers=TICKERS, feature_columns=FEATURE_COLUMNS_STOCK_DATA, n_steps=N_STEPS) # Load and transform
+    if train_data and eval_data:
+        save_transformed_and_prepared_data(train_data, eval_data) # Call the new combined saving function
+    else:
+        print("❌ Transformation process failed. Prepared data not saved.")
 
-    initial_cash = 100000
-    sample_portfolio = Portfolio(initial_cash, tickers)
+    print("Transformed and prepared data saved to directories specified in config.py") # Update message
+    print("✅ ETL - Transform and Prepare script completed successfully!") # Final success message
 
-    # Create Simulation instance
-    simulation = Simulation(sample_data, sample_portfolio)
-
-    
-    print("--- Simulation Start ---")
-    window_size = 5
-    initial_data_window = simulation.start(window_size)
-    if initial_data_window is not None:
-        print("\nInitial Data Window (First 5 days):")
-        print(initial_data_window)
-        print_dataframe_debugging_info(initial_data_window, name="Initial Data Window")
-
-
-    print("\n--- Simulation Steps (Running to End) ---")
-    step_count = 0 # Counter for steps taken
-    while True: # Run steps until simulation finishes
-        current_data_window = simulation.step(window_size)
-        if current_data_window is not None:
-            step_count += 1
-            print(f"\nData Window at Date: {simulation.current_date.date()} (Step {step_count})")
-            print(current_data_window)
-            print_dataframe_debugging_info(current_data_window, name=f"Data Window at Date: {simulation.current_date.date()} (Step {step_count})")
-        else:
-            print("Simulation ended within loop.")
-            break # Exit loop when step() returns None
-
-    print("\n--- Simulation End ---")
-    print(f"Is simulation finished? {simulation.is_simulation_finished}") # Should now be True
-    print(f"Total steps taken: {step_count}") # Print the number of steps actually taken
-    print(f"Current portfolio cash: ${simulation.portfolio.cash:.2f}")
-    print(f"Current portfolio holdings: {simulation.portfolio.holdings}")

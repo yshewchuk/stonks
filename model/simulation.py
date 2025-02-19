@@ -1,3 +1,4 @@
+from sklearn.preprocessing import MinMaxScaler
 from model.portfolio import Portfolio
 from utils.dataframe import print_dataframe_debugging_info
 import pandas as pd
@@ -66,26 +67,38 @@ class Simulation:
         if self.initial_portfolio_value == 0:
             self.initial_portfolio_value = self.portfolio.cash
 
-
     def _scale_price_data(self):
         """
-        Scales price-related data in self.data to percentage difference from the first day's Open price.
+        Scales price-related and volume data in self.data.
 
-        Identifies price-based columns using tags and scales them, excluding 'Volume' columns.
-        Scaling is done relative to the Open price of the first date for each ticker.
+        Price-related columns are scaled to percentage difference from the first day's Open price.
+        Volume columns are scaled using MinMaxScaler fitted on the *first window* of data.
         """
         first_date = self.simulation_dates[0]
-        price_column_tags = ['Open', 'High', 'Low', 'Close', 'MA', 'Hi', 'Lo'] # Tags to identify price-based columns
+        price_column_tags = ['Open', 'High', 'Low', 'Close', 'MA', 'Hi', 'Lo']
+        self.volume_scalers = {} # Store scalers for volume columns
+
+        initial_window_size = 60 # Define your initial window size (e.g., 60 days)
+        initial_dates_for_scaling = self.simulation_dates[:min(initial_window_size, len(self.simulation_dates))] # Get dates for initial window
 
         for ticker in self.portfolio.holdings:
+            # --- Volume Scaling (Fit scaler on initial window data) ---
+            initial_volume_data = self.data.loc[initial_dates_for_scaling, (ticker, 'Volume')].values.reshape(-1, 1) # Get volume data for the initial window
+            scaler = MinMaxScaler()
+            scaler.fit(initial_volume_data) # FIT SCALER ONLY ON INITIAL WINDOW DATA
+            self.volume_scalers[ticker] = scaler # Store fitted scaler
+
+            # Apply the SAME scaler to the ENTIRE Volume column for all dates
+            volume_data_full = self.data[(ticker, 'Volume')].values.reshape(-1, 1)
+            self.data[(ticker, 'Volume')] = scaler.transform(volume_data_full)
+
+            # --- Price Scaling (remains as before - relative to first date's Open) ---
             initial_open_price = self.data.loc[first_date, (ticker, 'Open')]
             if initial_open_price == 0:
                 initial_open_price = 1.0
-
             for col in self.data.columns:
-                if col[0] == ticker and any(tag in col[1] for tag in price_column_tags): # Check ticker,if it's a price column
+                if col[0] == ticker and any(tag in col[1] for tag in price_column_tags):
                     self.data[col] = (self.data[col] - initial_open_price) / initial_open_price
-
 
 
     def _initialize_portfolio_metrics_columns(self):

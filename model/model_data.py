@@ -163,7 +163,6 @@ class ModelData:
             print("Warning: No data available to create simulations. Model data is empty or not loaded.")
             return [] # Return empty list if no data
 
-
         simulations = []
         valid_simulation_dates = 0 # Counter for successfully created simulations
 
@@ -174,15 +173,13 @@ class ModelData:
             if end_date <= self.date_max:
                 portfolio = Portfolio(portfolio_value, self.tickers) # Create new Portfolio for each simulation
                 simulation_data = self.data.loc[date : end_date] # Extract simulation data window
-                simulations.append(Simulation(simulation_data, portfolio)) # Assuming Simulation class exists and takes data and portfolio
+                yield Simulation(simulation_data, portfolio) # Assuming Simulation class exists and takes data and portfolio
                 valid_simulation_dates += 1
 
         if not simulations:
             print("Warning: No simulations could be created within the available date range and simulation window.")
         else:
             print(f"✅ Created {valid_simulation_dates} simulations, each with a {simulation_window_days}-day window.")
-
-        return simulations
 
 
 # Example Usage (for testing and demonstration - assuming data files exist in 'raw_data' directory)
