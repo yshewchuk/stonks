@@ -166,6 +166,8 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
     for sim in simulations:
         count += 1
         sim.start(60).to_csv(f'simulations/{count}.csv')
+        for i in range(1, 100):
+            sim.step(60, [{ 'ticker': 'AAPL', 'quantity': 1, 'order_type': 'buy'}]).to_csv(f'simulations/{count}_{i}.csv')
 
     return
 

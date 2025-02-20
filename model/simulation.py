@@ -63,9 +63,11 @@ class Simulation:
         first_date = self.simulation_dates[0]
         for ticker in self.portfolio.holdings:
             initial_stock_prices[ticker] = self.valuations[first_date][ticker] # Use original prices for initial valuation
-        self.initial_portfolio_value = self.portfolio.value(initial_stock_prices)
+        self.portfolio.update_valuations(initial_stock_prices)
+        self.initial_portfolio_value = self.portfolio.value()
         if self.initial_portfolio_value == 0:
             self.initial_portfolio_value = self.portfolio.cash
+
 
     def _scale_price_data(self):
         """
@@ -118,7 +120,8 @@ class Simulation:
         for ticker in self.portfolio.holdings:
             stock_prices_at_date[ticker] = self.valuations[current_date][ticker] # Use original closing prices from valuations
 
-        portfolio_value = self.portfolio.value(stock_prices_at_date)
+        self.portfolio.update_valuations(stock_prices_at_date)
+        portfolio_value = self.portfolio.value()
         relative_value = portfolio_value / self.initial_portfolio_value
         self.data.loc[current_date, 'Relative Value'] = relative_value
         self.data.loc[current_date, 'Cash Percent of Value'] = self.portfolio.cash / portfolio_value if portfolio_value != 0 else 0
@@ -160,7 +163,7 @@ class Simulation:
         return self.get_current_data_window(window)
 
 
-    def step(self, window):
+    def step(self, window, orders=None):
         """
         Advances the simulation by one time step and returns the next data window.
 
@@ -171,6 +174,7 @@ class Simulation:
 
         Args:
             window (int): The number of time steps (days) for the data window. Must be positive and consistent with 'start()' window.
+            orders: The set of orders that may be filled on the following day
 
         Returns:
             pd.DataFrame or None: DataFrame slice for the current 'window' steps, or None if simulation end is reached.
@@ -187,25 +191,45 @@ class Simulation:
             return None
 
         current_date = self.simulation_dates[self.current_step_index]
+
+        if orders: # Check if orders were provided
+            self._execute_orders(orders, current_date) # Execute orders before the end of the day
+        
         self._calculate_portfolio_metrics(current_date)
+
 
         return self.get_current_data_window(window)
 
+
+    def _execute_orders(self, orders, current_date):
+        """
+        Executes a list of orders at the current date's Open price.
+        Assumes all orders are filled at the open price for simplicity.
+
+        Args:
+            orders (list): List of order dictionaries, each like:
+                           {'ticker': 'AAPL', 'order_type': 'buy', 'quantity': 10}
+            current_date (pd.Timestamp): The current simulation date.
+        """
+        for order in orders:
+            ticker = order['ticker']
+            order_type = order['order_type']
+            quantity = order['quantity']
+
+            fill_price = self.transaction_prices.loc[current_date, (ticker, 'Open')] # Get Open price for fill
+
+            if order_type == 'buy':
+                self.portfolio.buy(ticker, fill_price, quantity)
+            elif order_type == 'sell':
+                self.portfolio.sell(ticker, fill_price, quantity)
+            else:
+                raise ValueError(f"Invalid order type: {order_type}. Must be 'buy' or 'sell'.")
 
 
     def get_current_data_window(self, window):
         """
         Returns a DataFrame slice representing the current data window.
-
-        Extracts a DataFrame slice from 'self.data' starting from the 'current_step_index'
-        backwards for 'window' steps. This provides the data window for model input.
-
-        Args:
-            window (int): The size of the data window (number of days).
-
-        Returns:
-            pd.DataFrame: DataFrame slice representing the current data window,
-                          or None if current step index is invalid.
+        ... (rest of get_current_data_window docstring) ...
         """
         if self.current_step_index < 0 or self.current_step_index >= len(self.simulation_dates):
             return None
@@ -245,8 +269,8 @@ class Simulation:
 # Example Usage (for testing and demonstration)
 if __name__ == '__main__':
     # Create sample data and portfolio (replace with your actual data loading and portfolio setup)
-    dates = pd.to_datetime(['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08', '2024-01-09', '2024-01-10'])
-    tickers = ['AAPL', 'GOOG']
+    dates = pd.to_datetime(['2012-08-01', '2012-08-02', '2012-08-03', '2012-08-06', '2012-08-07', '2012-08-08', '2012-08-09', '2012-08-10']) # Using same dates as sample data
+    tickers = ['AAPL', 'MSFT']
     # Create MultiIndex for columns - Ticker and OHLCV
     columns = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Volume', 'MA5', 'MA20']], names=['Ticker', 'OHLCV']) # Added MA5 and MA20 for testing price scaling
     data_values = np.random.rand(len(dates), len(tickers) * 7) # Adjusted for extra MA columns
@@ -263,20 +287,36 @@ if __name__ == '__main__':
     window_size = 5
     initial_data_window = simulation.start(window_size)
     if initial_data_window is not None:
-        print("\nInitial Data Window (First 5 days) - Scaled Prices:")
-        print(initial_data_window)
-        print_dataframe_debugging_info(initial_data_window, name="Initial Data Window - Scaled Prices")
+        print("\nInitial Data Window:")
+        print(initial_data_window.tail())
 
 
-    print("\n--- Simulation Steps (Running to End) ---")
-    step_count = 0
+        print("\n--- Simulation Step with Orders ---")
+        # Example orders to place at the next step (after the initial window)
+        orders_day1 = [
+            {'ticker': 'AAPL', 'order_type': 'buy', 'quantity': 10},
+            {'ticker': 'MSFT', 'order_type': 'sell', 'quantity': 5}
+        ]
+
+        current_data_window_step1 = simulation.step(window_size, orders=orders_day1) # Pass orders to step()
+        if current_data_window_step1 is not None:
+            print("\nData Window after Step 1 (with orders):")
+            print(current_data_window_step1.tail())
+            print(f"Portfolio cash after step 1: ${simulation.portfolio.cash:.2f}")
+            print(f"AAPL holdings after step 1: {simulation.portfolio.holdings['AAPL']}")
+            print(f"MSFT holdings after step 1: {simulation.portfolio.holdings['MSFT']}")
+        else:
+            print("Simulation ended at step 1.")
+
+
+    print("\n--- Simulation Steps (Running to End, No Orders) ---")
+    step_count = 1 # Start from step 1 as we already did step 1 with orders
     while True:
-        current_data_window = simulation.step(window_size)
+        current_data_window = simulation.step(window_size) # No orders passed in subsequent steps
         if current_data_window is not None:
             step_count += 1
-            print(f"\nData Window at Date: {simulation.current_date.date()} (Step {step_count}) - Scaled Prices:")
-            print(current_data_window)
-            print_dataframe_debugging_info(current_data_window, name=f"Data Window at Date: {simulation.current_date.date()} (Step {step_count}) - Scaled Prices")
+            print(f"\nData Window at Date: {simulation.current_date.date()} (Step {step_count}) - No Orders:")
+            print(current_data_window.tail())
         else:
             print("Simulation ended within loop.")
             break

@@ -22,6 +22,7 @@ class Portfolio:
         self.__cash = float(starting_cash)  # Use float for cash to handle decimal values
         self.__holdings = {ticker: 0 for ticker in tickers} # Initialize holdings for each ticker to 0
         self.__tickers = list(tickers) # Store tickers as a list for consistent iteration
+        self.latest_valuation = {ticker: None for ticker in tickers} # Initialize last valuations to None
 
         self.TRADING_FEE = 20.0  # Define a constant for the trading fee
 
@@ -44,6 +45,25 @@ class Portfolio:
             dict: A dictionary where keys are ticker symbols (str) and values are the number of shares held (int).
         """
         return self.__holdings
+
+    def update_valuations(self, stock_values):
+        """
+        Updates the last known valuations of each held ticker.
+
+        Args:
+            stock_values (dict): Dictionary of tickers to their current closing prices.
+        """
+        if not isinstance(stock_values, dict):
+            raise ValueError("stock_values must be a dictionary.")
+        for ticker in self.__tickers:
+            if ticker not in stock_values:
+                raise ValueError(f"stock_values dictionary is missing price for ticker: '{ticker}': {stock_values}.")
+            if not isinstance(stock_values[ticker], (int, float)) or stock_values[ticker] < 0:
+                raise ValueError(f"Price for ticker '{ticker}' in stock_values must be a non-negative number.")
+            
+        for ticker, valuation in stock_values.items():
+            if ticker in self.tickers: # Ensure we only update for tickers in our portfolio
+                self.latest_valuation[ticker] = valuation
 
     def buy(self, ticker, price, quantity):
         """
@@ -113,7 +133,7 @@ class Portfolio:
         self.__holdings[ticker] -= quantity
         return True  # Sell order successful
 
-    def value(self, stock_values):
+    def value(self, stock_values=None):
         """
         Calculates the total value of the portfolio, including cash and stock holdings.
 
@@ -123,6 +143,9 @@ class Portfolio:
         Returns:
             float: The total portfolio value (cash + value of all stock holdings).
         """
+        if stock_values is None:
+            stock_values = self.latest_valuation
+
         if not isinstance(stock_values, dict):
             raise ValueError("stock_values must be a dictionary.")
         for ticker in self.__tickers:
@@ -130,7 +153,6 @@ class Portfolio:
                 raise ValueError(f"stock_values dictionary is missing price for ticker: '{ticker}': {stock_values}.")
             if not isinstance(stock_values[ticker], (int, float)) or stock_values[ticker] < 0:
                 raise ValueError(f"Price for ticker '{ticker}' in stock_values must be a non-negative number.")
-
 
         stock_value_sum = 0.0  # Initialize sum for stock values
         for ticker in self.__tickers:
