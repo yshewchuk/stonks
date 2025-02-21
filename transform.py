@@ -171,7 +171,7 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
 
     return
 
-
+'''
 if __name__ == '__main__':
     print("\n🎉 Starting Stock Data Transformation and Preparation (Transform Script)...")
 
@@ -183,4 +183,51 @@ if __name__ == '__main__':
 
     print("Transformed and prepared data saved to directories specified in config.py") # Update message
     print("✅ ETL - Transform and Prepare script completed successfully!") # Final success message
+'''
 
+# Example Usage (for testing and demonstration)
+if __name__ == '__main__':
+    # Define tickers and starting cash
+    tickers = ['AAPL', 'GOOG', 'MSFT']
+    starting_cash = 100000
+
+    # Create a Portfolio instance
+    portfolio = Portfolio(starting_cash, tickers)
+
+    # Simulate buying stocks
+    date1 = pd.to_datetime('2024-01-02')
+    portfolio.buy(date1, 'AAPL', price=170, quantity=10)
+    date2 = pd.to_datetime('2024-01-03')
+    portfolio.buy(date2, 'GOOG', price=2700, quantity=2)
+
+    # Simulate selling stocks
+    date3 = pd.to_datetime('2024-01-05')
+    portfolio.sell(date3, 'AAPL', price=180, quantity=5)
+
+
+    # Get transactions for date3
+    transactions_date3 = portfolio.get_transactions_on_date(date3)
+    print(f"\n--- Transactions on {date3.date()} ---")
+    for txn in transactions_date3:
+        print(txn)
+
+    print(f"\n--- Full Transaction Log ---")
+    for txn in portfolio.transaction_log:
+        print(txn) # Transaction objects will be printed using their __repr__ method
+
+    # Calculate portfolio value with example stock prices
+    current_stock_prices = {'AAPL': 185, 'GOOG': 3000,  'MSFT': 310}
+    date4 = pd.to_datetime('2024-01-07')
+    portfolio.update_valuations(date4, current_stock_prices)
+    print(f"\n--- Portfolio Value on {date4.date()} ---")
+    print(f"Portfolio Value: ${portfolio.latest_value():.2f}")
+
+    # Test chronological order enforcement - should raise ValueError
+    try:
+        portfolio.buy(pd.to_datetime('2024-01-04'), 'MSFT', price=300, quantity=10) # Date before last transaction (2024-01-07 from update_valuations, but conceptually 2024-01-05 from sell)
+    except ValueError as e:
+        print(f"\n--- Chronological Order Test (Expected Error) ---")
+        print(f"Error caught: {e}")
+    else:
+        print("\n--- Chronological Order Test (Error NOT Caught - PROBLEM!) ---")
+        print("Expected ValueError was not raised when adding out-of-order transaction.")

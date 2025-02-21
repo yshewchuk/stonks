@@ -1,10 +1,12 @@
 import pandas as pd
+from model.transaction import Transaction # Import Transaction class from transaction.py
 
 class Portfolio:
     """
     Represents a financial portfolio, managing cash, stock holdings, and portfolio value.
 
-    Simplified holdings tracking, clarified valuation methods, and refined profit calculation.
+    Simplified holdings tracking, clarified valuation methods, refined profit calculation,
+    transaction logging using Transaction class, and optimized transaction retrieval.
     """
 
     TRADING_FEE = 20.0  # Define a constant for the trading fee
@@ -26,9 +28,9 @@ class Portfolio:
         # __holdings now stores quantity and total_cost directly
         self.__holdings = {ticker: {'quantity': 0, 'total_cost': 0.0} for ticker in tickers}
         self.__tickers = list(tickers)  # Store tickers as a list for consistent iteration
-        self.latest_valuation_date = None # Store only the latest date for which valuation is updated
+        self.latest_valuation_date = None
         self.value_history = {}  # Dictionary to store portfolio value history (date: value)
-        self.transaction_log = []  # List to store transaction logs
+        self.__transaction_log = []  # **Private attribute**: Transaction log now stores Transaction objects
 
 
     @property
@@ -123,6 +125,16 @@ class Portfolio:
         return self.__cash + stock_value_sum
 
 
+    def _validate_transaction_date(self, date):
+        """
+        Ensures that the transaction date is chronologically valid using transaction log.
+        """
+        if self.__transaction_log: # Check if transaction log is not empty
+            last_transaction_date = self.__transaction_log[-1].date # Get date of the last transaction in log
+            if date < last_transaction_date:
+                raise ValueError(f"Transaction date {date.strftime('%Y-%m-%d')} is before the last transaction date {last_transaction_date.strftime('%Y-%m-%d')}. Transactions must be ordered chronologically.")
+
+
     def buy(self, date, ticker, price, quantity):
         """
         Simulates buying a quantity of stock shares, updates holdings with transaction details,
@@ -146,6 +158,8 @@ class Portfolio:
         if not isinstance(date, pd.Timestamp):
             raise ValueError("date must be a Pandas Timestamp.")
 
+        self._validate_transaction_date(date) # Validate transaction date
+
         total_cost_before_fees = price * quantity
         transaction_cost = total_cost_before_fees + self.TRADING_FEE
 
@@ -158,16 +172,18 @@ class Portfolio:
         self.__holdings[ticker]['total_cost'] += transaction_cost
 
 
-        # Log transaction
-        self.transaction_log.append({
-            'date': date,
-            'ticker': ticker,
-            'transaction_type': 'buy',
-            'quantity': quantity,
-            'price': price,
-            'transaction_cost': self.TRADING_FEE,
-            'total_cost': transaction_cost
-        })
+        # Log transaction - Now using Transaction class
+        transaction = Transaction(
+            date=date,
+            ticker=ticker,
+            transaction_type='buy',
+            quantity=quantity,
+            price=price,
+            transaction_cost=self.TRADING_FEE,
+            total_cost=transaction_cost # For buy orders, we have total_cost
+        )
+        self.__transaction_log.append(transaction) # Store Transaction object
+
         return True  # Buy order successful
 
 
@@ -194,8 +210,9 @@ class Portfolio:
         if not isinstance(date, pd.Timestamp):
             raise ValueError("date must be a Pandas Timestamp.")
 
+        self._validate_transaction_date(date) # Validate transaction date
 
-        current_holdings_qty = self.get_holding_quantity(ticker)
+        current_holdings_qty = self.get_holding_quantity(ticker) # Use getter
         if current_holdings_qty < quantity:
             raise ValueError(f"Insufficient holdings of {ticker} to sell {quantity} shares. Holdings: {current_holdings_qty}, Sell Quantity: {quantity}")
 
@@ -212,19 +229,51 @@ class Portfolio:
         self.__holdings[ticker]['total_cost'] -= cost_reduction
 
 
-        # Log transaction
-        self.transaction_log.append({
-            'date': date,
-            'ticker': ticker,
-            'transaction_type': 'sell',
-            'quantity': quantity,
-            'price': price,
-            'transaction_cost': self.TRADING_FEE,
-            'transaction_proceeds': transaction_proceeds,
-            'profit': profit
-        })
+        # Log transaction - Now using Transaction class
+        transaction = Transaction(
+            date=date,
+            ticker=ticker,
+            transaction_type='sell',
+            quantity=quantity,
+            price=price,
+            transaction_cost=self.TRADING_FEE,
+            transaction_proceeds=transaction_proceeds, # For sell orders, we have proceeds and profit
+            profit=profit
+        )
+        self.__transaction_log.append(transaction) # Store Transaction object
 
         return profit  # Sell order successful, return profit
+
+    def get_transactions_on_date(self, date):
+        """
+        Retrieves all transactions that occurred on a specific date.
+        Optimized for chronologically ordered transaction log - searching from the end.
+
+        Args:
+            date (pd.Timestamp): The date for which to retrieve transactions.
+
+        Returns:
+            list[Transaction]: A list of Transaction objects that occurred on the given date.
+        """
+        if not isinstance(date, pd.Timestamp):
+            raise ValueError("date must be a Pandas Timestamp.")
+        transactions_on_date = []
+        # Iterate in reverse order for efficiency when querying latest dates
+        for txn in reversed(self.__transaction_log):
+            if txn.date == date:
+                transactions_on_date.append(txn)
+            elif txn.date < date: # Stop searching if transaction date is before the target date
+                break
+        return transactions_on_date
+
+
+    @property
+    def transaction_log(self):
+        """
+        Returns a copy of the transaction log (list of Transaction objects).
+        """
+        return list(self.__transaction_log) # Return a copy to prevent external modification
+
 
     def copy(self):
         """
@@ -234,10 +283,10 @@ class Portfolio:
             Portfolio: A new Portfolio object with the same state as the original.
         """
         portfolio_copy = Portfolio(self.cash, self.__tickers)
-        portfolio_copy.__holdings = {ticker: holding_data.copy() for ticker, holding_data in self.__holdings.items()} # Deep copy holdings dicts
-        portfolio_copy.latest_valuation_date = self.latest_valuation_date # Copy latest_valuation_date
+        portfolio_copy.__holdings = {ticker: holding_data.copy() for ticker, holding_data in self.__holdings.items()}
+        portfolio_copy.latest_valuation_date = self.latest_valuation_date
         portfolio_copy.value_history = self.value_history.copy()
-        portfolio_copy.transaction_log = [log_entry.copy() for log_entry in self.transaction_log] # Deep copy transaction logs
+        portfolio_copy.__transaction_log = list(self.transaction_log) # Create a new list of Transaction objects
         return portfolio_copy
 
 
@@ -251,56 +300,40 @@ if __name__ == '__main__':
     # Create a Portfolio instance
     portfolio = Portfolio(starting_cash, tickers)
 
-    print("--- Initial Portfolio ---")
-    print(f"Cash: ${portfolio.cash:.2f}")
-    print(f"Holdings: {portfolio.holdings}")
-    print(f"Total Value (assuming initial prices are $0): ${portfolio.value({ticker: 0 for ticker in tickers}):.2f}")
-
     # Simulate buying stocks
     date1 = pd.to_datetime('2024-01-02')
-    buy_successful_aapl = portfolio.buy(date1, 'AAPL', price=170, quantity=10)
+    portfolio.buy(date1, 'AAPL', price=170, quantity=10)
     date2 = pd.to_datetime('2024-01-03')
-    buy_successful_goog = portfolio.buy(date2, 'GOOG', price=2700, quantity=2)
-
-
-    print("\n--- After Buying ---")
-    print(f"Buy AAPL successful: {buy_successful_aapl}")
-    print(f"Buy GOOG successful: {buy_successful_goog}")
-    print(f"Cash: ${portfolio.cash:.2f}")
-    print(f"Holdings: {portfolio.holdings}")
-    print(f"AAPL Average Buy Price: ${portfolio.get_average_buy_price('AAPL'):.2f}")
-    print(f"GOOG Average Buy Price: ${portfolio.get_average_buy_price('GOOG'):.2f}")
-
+    portfolio.buy(date2, 'GOOG', price=2700, quantity=2)
 
     # Simulate selling stocks
-    date4 = pd.to_datetime('2024-01-05')
-    sell_successful_aapl_profit = portfolio.sell(date4, 'AAPL', price=180, quantity=5)
-    date5 = pd.to_datetime('2024-01-06')
-    try:
-        sell_failed_goog = portfolio.sell(date5, 'GOOG', price=2800, quantity=3) # Should raise error
-    except ValueError as e:
-        sell_failed_goog_error = e
-    else:
-        sell_failed_goog_error = None
+    date3 = pd.to_datetime('2024-01-05')
+    portfolio.sell(date3, 'AAPL', price=180, quantity=5)
 
 
-    print("\n--- After Selling ---")
-    print(f"Sell AAPL successful: Profit from AAPL sell: ${sell_successful_aapl_profit:.2f}")
-    print(f"Sell GOOG error (expected): {sell_failed_goog_error}")
-    print(f"Cash: ${portfolio.cash:.2f}")
-    print(f"Holdings: {portfolio.holdings}")
-    print(f"AAPL Average Buy Price: ${portfolio.get_average_buy_price('AAPL'):.2f}") # Should remain the same or adjust if more buys happened
-    print(f"GOOG Average Buy Price: ${portfolio.get_average_buy_price('GOOG'):.2f}") # Should remain the same
+    # Get transactions for date3
+    transactions_date3 = portfolio.get_transactions_on_date(date3)
+    print(f"\n--- Transactions on {date3.date()} ---")
+    for txn in transactions_date3:
+        print(txn)
 
+    print(f"\n--- Full Transaction Log ---")
+    for txn in portfolio.transaction_log:
+        print(txn) # Transaction objects will be printed using their __repr__ method
 
     # Calculate portfolio value with example stock prices
-    current_stock_prices = {'AAPL': 185, 'GOOG': 2850, 'MSFT': 310}
-    date6 = pd.to_datetime('2024-01-07')
-    portfolio_value = portfolio.update_valuations(date6, current_stock_prices) # Update and get value
-    print(f"\n--- Portfolio Value ---")
-    print(f"Portfolio Value on {date6.date()} (updated and returned): ${portfolio_value:.2f}")
-    print(f"Latest Portfolio Value (using latest_value()): ${portfolio.latest_value():.2f}") # Get value using latest known prices
-    print(f"Value History: {portfolio.value_history}")
-    print(f"\n--- Transaction Log ---")
-    for log_entry in portfolio.transaction_log:
-        print(log_entry)
+    current_stock_prices = {'AAPL': 185, 'GOOG': 3000,  'MSFT': 310}
+    date4 = pd.to_datetime('2024-01-07')
+    portfolio.update_valuations(date4, current_stock_prices)
+    print(f"\n--- Portfolio Value on {date4.date()} ---")
+    print(f"Portfolio Value: ${portfolio.latest_value():.2f}")
+
+    # Test chronological order enforcement - should raise ValueError
+    try:
+        portfolio.buy(pd.to_datetime('2024-01-04'), 'MSFT', price=300, quantity=10) # Date before last transaction (2024-01-07 from update_valuations, but conceptually 2024-01-05 from sell)
+    except ValueError as e:
+        print(f"\n--- Chronological Order Test (Expected Error) ---")
+        print(f"Error caught: {e}")
+    else:
+        print("\n--- Chronological Order Test (Error NOT Caught - PROBLEM!) ---")
+        print("Expected ValueError was not raised when adding out-of-order transaction.")
