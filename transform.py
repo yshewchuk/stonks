@@ -187,47 +187,73 @@ if __name__ == '__main__':
 
 # Example Usage (for testing and demonstration)
 if __name__ == '__main__':
-    # Define tickers and starting cash
-    tickers = ['AAPL', 'GOOG', 'MSFT']
-    starting_cash = 100000
+    # Create sample data and portfolio (replace with your actual data loading and portfolio setup)
+    dates = pd.to_datetime(['2012-08-01', '2012-08-02', '2012-08-03', '2012-08-06', '2012-08-07', '2012-08-08', '2012-08-09', '2012-08-10']) # Using same dates as sample data
+    tickers = ['AAPL', 'MSFT']
+    # Create MultiIndex for columns - Ticker and OHLCV
+    columns = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Volume', 'MA5', 'MA20']], names=['Ticker', 'OHLCV']) # Added MA5 and MA20 for testing price scaling
+    data_values = np.random.rand(len(dates), len(tickers) * 7) # Adjusted for extra MA columns
+    sample_data = pd.DataFrame(data_values, index=dates, columns=columns) # dates as DatetimeIndex
+    sample_data.index.name = 'Date'
 
-    # Create a Portfolio instance
-    portfolio = Portfolio(starting_cash, tickers)
+    initial_cash = 100000
+    sample_portfolio = Portfolio(initial_cash, tickers)
 
-    # Simulate buying stocks
-    date1 = pd.to_datetime('2024-01-02')
-    portfolio.buy(date1, 'AAPL', price=170, quantity=10)
-    date2 = pd.to_datetime('2024-01-03')
-    portfolio.buy(date2, 'GOOG', price=2700, quantity=2)
+    # Create Simulation instance
+    simulation = Simulation(sample_data, sample_portfolio)
 
-    # Simulate selling stocks
-    date3 = pd.to_datetime('2024-01-05')
-    portfolio.sell(date3, 'AAPL', price=180, quantity=5)
+    print("--- Simulation Start ---")
+    window_size = 5
+    initial_state = simulation.start(window_size) # Get SimulationState
+    if initial_state is not None:
+        print("\nInitial Data Window:")
+        print(initial_state.data_window.tail())
+        print("\nInitial Simulation State:")
+        print(initial_state) # Print SimulationState object
+
+        print("\n--- Simulation Step with Orders ---")
+        # Example orders to place at the next step (after the initial window)
+        orders_day1 = [
+            {'ticker': 'AAPL', 'order_type': 'buy', 'quantity': 10},
+            {'ticker': 'MSFT', 'order_type': 'buy', 'quantity': 5}
+        ]
+
+        next_state_step1 = simulation.step(window_size, orders=orders_day1) # Get next SimulationState
+        if next_state_step1 is not None:
+            print("\nData Window after Step 1 (with orders):")
+            print(next_state_step1.data_window.tail())
+            print("\nSimulation State after Step 1 (with orders):")
+            print(next_state_step1) # Print SimulationState object
+            print(f"Portfolio cash after step 1: ${next_state_step1.portfolio.cash:.2f}") # Access portfolio from SimulationState
+            # Corrected lines using get_holding_quantity()
+            print(f"AAPL holdings after step 1: {simulation.portfolio.get_holding_quantity('AAPL')}") # Use getter!
+            print(f"MSFT holdings after step 1: {simulation.portfolio.get_holding_quantity('MSFT')}") # Use getter!
+        else:
+            print("Simulation ended at step 1.")
 
 
-    # Get transactions for date3
-    transactions_date3 = portfolio.get_transactions_on_date(date3)
-    print(f"\n--- Transactions on {date3.date()} ---")
-    for txn in transactions_date3:
-        print(txn)
+    print("\n--- Simulation Steps (Running to End, No Orders) ---")
+    step_count = 1 # Start from step 1 as we already did step 1 with orders
+    while True:
+        orders_day2 = [
+            {'ticker': 'AAPL', 'order_type': 'sell', 'quantity': 1},
+            {'ticker': 'MSFT', 'order_type': 'sell', 'quantity': 1}
+        ]
+        next_state = simulation.step(window_size, orders_day2) # Get next SimulationState
+        if next_state is not None:
+            step_count += 1
+            print(f"\nData Window at Date: {next_state.current_date.date()} (Step {step_count}) - No Orders:")
+            print(next_state.data_window.tail())
+            print(f"Simulation State at Date: {next_state.current_date.date()} (Step {step_count}) - No Orders:")
+            print(next_state) # Print SimulationState object
+        else:
+            print("Simulation ended within loop.")
+            break
 
-    print(f"\n--- Full Transaction Log ---")
-    for txn in portfolio.transaction_log:
-        print(txn) # Transaction objects will be printed using their __repr__ method
-
-    # Calculate portfolio value with example stock prices
-    current_stock_prices = {'AAPL': 185, 'GOOG': 3000,  'MSFT': 310}
-    date4 = pd.to_datetime('2024-01-07')
-    portfolio.update_valuations(date4, current_stock_prices)
-    print(f"\n--- Portfolio Value on {date4.date()} ---")
-    print(f"Portfolio Value: ${portfolio.latest_value():.2f}")
-
-    # Test chronological order enforcement - should raise ValueError
-    try:
-        portfolio.buy(pd.to_datetime('2024-01-04'), 'MSFT', price=300, quantity=10) # Date before last transaction (2024-01-07 from update_valuations, but conceptually 2024-01-05 from sell)
-    except ValueError as e:
-        print(f"\n--- Chronological Order Test (Expected Error) ---")
-        print(f"Error caught: {e}")
-    else:
-        print("\n--- Chronological Order Test (Error NOT Caught - PROBLEM!) ---")
-        print("Expected ValueError was not raised when adding out-of-order transaction.")
+    print("\n--- Simulation End ---")
+    print(f"Is simulation finished? {simulation.is_simulation_finished}")
+    print(f"Total steps taken: {step_count}")
+    print(f"Current portfolio cash: ${simulation.portfolio.cash:.2f}") # Access final portfolio from simulation object
+    # Corrected lines using get_holding_quantity() for final holdings printout
+    print(f"Current portfolio holdings - AAPL: {simulation.portfolio.get_holding_quantity('AAPL')}") # Use getter!
+    print(f"Current portfolio holdings - MSFT: {simulation.portfolio.get_holding_quantity('MSFT')}") # Use getter!

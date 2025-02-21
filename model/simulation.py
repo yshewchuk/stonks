@@ -1,5 +1,6 @@
 from sklearn.preprocessing import MinMaxScaler
 from model.portfolio import Portfolio
+from model.simulation_state import SimulationState # Import SimulationState
 from utils.dataframe import print_dataframe_debugging_info
 import pandas as pd
 import numpy as np
@@ -10,7 +11,7 @@ class Simulation:
 
     This class encapsulates the data for a specific simulation period, manages a Portfolio object,
     and provides methods to initialize the simulation, advance through time steps, and retrieve
-    data for model input at each step.
+    simulation state at each step.
     """
 
     def __init__(self, data, portfolio):
@@ -19,7 +20,7 @@ class Simulation:
 
         Args:
             data (pd.DataFrame): DataFrame containing stock data for the simulation period.
-                                  It is expected to have a DatetimeIndex and MultiIndex columns with 'Ticker' level.
+                                 It is expected to have a DatetimeIndex and MultiIndex columns with 'Ticker' level.
             portfolio (Portfolio): Portfolio object to be used for this simulation.
         """
         if not isinstance(data, pd.DataFrame):
@@ -46,10 +47,10 @@ class Simulation:
         self.valuations = {}
         for date in self.simulation_dates:
             self.valuations[date] = {}
-            for ticker in self.portfolio.holdings:
+            for ticker in self.portfolio.tickers():
                 self.valuations[date][ticker] = self.data.loc[date, (ticker, 'Close')]
 
-        self.transaction_prices = self.data[list(map(lambda x: (x, 'Open'), self.portfolio.holdings.keys()))].copy()
+        self.transaction_prices = self.data[list(map(lambda x: (x, 'Open'), self.portfolio.tickers()))].copy()
 
 
         self._initialize_portfolio_metrics_columns() # Setup columns for portfolio value tracking
@@ -61,10 +62,10 @@ class Simulation:
         """Calculates and stores the initial portfolio value at the start of the simulation."""
         initial_stock_prices = {}
         first_date = self.simulation_dates[0]
-        for ticker in self.portfolio.holdings:
+        for ticker in self.portfolio.tickers():
             initial_stock_prices[ticker] = self.valuations[first_date][ticker] # Use original prices for initial valuation
-        self.portfolio.update_valuations(initial_stock_prices)
-        self.initial_portfolio_value = self.portfolio.value()
+        self.portfolio.update_valuations(pd.to_datetime(first_date), initial_stock_prices) # Pass date as Timestamp
+        self.initial_portfolio_value = self.portfolio.value(initial_stock_prices) # Pass initial prices
         if self.initial_portfolio_value == 0:
             self.initial_portfolio_value = self.portfolio.cash
 
@@ -83,7 +84,7 @@ class Simulation:
         initial_window_size = 60 # Define your initial window size (e.g., 60 days)
         initial_dates_for_scaling = self.simulation_dates[:min(initial_window_size, len(self.simulation_dates))] # Get dates for initial window
 
-        for ticker in self.portfolio.holdings:
+        for ticker in self.portfolio.tickers():
             # --- Volume Scaling (Fit scaler on initial window data) ---
             initial_volume_data = self.data.loc[initial_dates_for_scaling, (ticker, 'Volume')].values.reshape(-1, 1) # Get volume data for the initial window
             scaler = MinMaxScaler()
@@ -107,7 +108,7 @@ class Simulation:
         """ ... """
         self.data['Relative Value'] = 0.0
         self.data['Cash Percent of Value'] = 0.0
-        for ticker in self.portfolio.holdings:
+        for ticker in self.portfolio.tickers():
             self.data[(ticker, 'Holdings Percent of Value')] = 0.0 # MultiIndex column
 
 
@@ -117,32 +118,33 @@ class Simulation:
         ... (rest of docstring) ...
         """
         stock_prices_at_date = {}
-        for ticker in self.portfolio.holdings:
+        for ticker in self.portfolio.tickers():
             stock_prices_at_date[ticker] = self.valuations[current_date][ticker] # Use original closing prices from valuations
 
-        self.portfolio.update_valuations(stock_prices_at_date)
-        portfolio_value = self.portfolio.value()
+        self.portfolio.update_valuations(pd.to_datetime(current_date), stock_prices_at_date) # Pass date as Timestamp
+        portfolio_value = self.portfolio.value(stock_prices_at_date) # Pass current prices
         relative_value = portfolio_value / self.initial_portfolio_value
         self.data.loc[current_date, 'Relative Value'] = relative_value
         self.data.loc[current_date, 'Cash Percent of Value'] = self.portfolio.cash / portfolio_value if portfolio_value != 0 else 0
-        for ticker in self.portfolio.holdings:
-            ticker_holding_value = self.portfolio.holdings[ticker] * stock_prices_at_date[ticker]
+        for ticker in self.portfolio.tickers():
+            ticker_holding_value = self.portfolio.get_holding_quantity(ticker) * stock_prices_at_date[ticker] # Use getter
             self.data.loc[current_date, (ticker, 'Holdings Percent of Value')] = ticker_holding_value / portfolio_value if portfolio_value != 0 else 0
 
 
     def start(self, window):
         """
-        Starts the simulation and returns the initial data window for the model.
+        Starts the simulation and returns the initial SimulationState for the model.
 
-        Initializes portfolio metrics for the first 'window' days and returns the data
-        slice for the first 'window' steps, ready to be used as input for a model.
+        Initializes portfolio metrics for the first 'window' days and returns a SimulationState
+        object containing the data window, portfolio, and current date for the first 'window' steps,
+        ready to be used as input for a model.
 
         Args:
             window (int): The number of initial time steps (days) for the data window. Must be positive.
 
         Returns:
-            pd.DataFrame: DataFrame slice containing the data for the initial 'window' steps,
-                          with portfolio metric columns initialized.
+            SimulationState: Object encapsulating the initial simulation state,
+                             or None if initialization fails.
 
         Raises:
             ValueError: If 'window' is not a positive integer or is larger than the available data.
@@ -160,24 +162,29 @@ class Simulation:
             current_date = self.simulation_dates[i]
             self._calculate_portfolio_metrics(current_date)
 
-        return self.get_current_data_window(window)
+        data_window = self.get_current_data_window(window)
+        if data_window is None: # Handle case where no data window could be created (e.g., no data)
+            return None
+
+        return SimulationState(data_window=data_window, portfolio=self.portfolio, current_date=self.current_date) # Return SimulationState
 
 
     def step(self, window, orders=None):
         """
-        Advances the simulation by one time step and returns the next data window.
+        Advances the simulation by one time step and returns the next SimulationState.
 
         Increments the simulation step index to the next date in the data.
-        Calculates updated portfolio metrics for the new current date.
-        Returns a DataFrame slice containing the data for the current 'window' steps
-        up to the new current date.
+        Executes any provided orders, calculates updated portfolio metrics for the new current date.
+        Returns a SimulationState object containing the data window, portfolio, and current date
+        for the current 'window' steps up to the new current date.
 
         Args:
             window (int): The number of time steps (days) for the data window. Must be positive and consistent with 'start()' window.
-            orders: The set of orders that may be filled on the following day
+            orders: The set of orders to execute on the current step date (optional).
 
         Returns:
-            pd.DataFrame or None: DataFrame slice for the current 'window' steps, or None if simulation end is reached.
+            SimulationState or None: SimulationState object for the current step,
+                                     or None if simulation end is reached.
         """
         if not isinstance(window, int) or window <= 0:
             raise ValueError("Window must be a positive integer.")
@@ -194,11 +201,14 @@ class Simulation:
 
         if orders: # Check if orders were provided
             self._execute_orders(orders, current_date) # Execute orders before the end of the day
-        
+
         self._calculate_portfolio_metrics(current_date)
 
+        data_window = self.get_current_data_window(window)
+        if data_window is None: # Handle case where no data window could be created
+            return None
 
-        return self.get_current_data_window(window)
+        return SimulationState(data_window=data_window, portfolio=self.portfolio, current_date=self.current_date) # Return SimulationState
 
 
     def _execute_orders(self, orders, current_date):
@@ -219,9 +229,9 @@ class Simulation:
             fill_price = self.transaction_prices.loc[current_date, (ticker, 'Open')] # Get Open price for fill
 
             if order_type == 'buy':
-                self.portfolio.buy(ticker, fill_price, quantity)
+                self.portfolio.buy(pd.to_datetime(current_date), ticker, fill_price, quantity) # Pass date as Timestamp
             elif order_type == 'sell':
-                self.portfolio.sell(ticker, fill_price, quantity)
+                self.portfolio.sell(pd.to_datetime(current_date), ticker, fill_price, quantity) # Pass date as Timestamp
             else:
                 raise ValueError(f"Invalid order type: {order_type}. Must be 'buy' or 'sell'.")
 
@@ -238,7 +248,7 @@ class Simulation:
         start_date = self.simulation_dates[start_index]
         current_date = self.simulation_dates[self.current_step_index]
 
-        data_window = self.data.loc[start_date : current_date].copy()
+        data_window = self.data.loc[start_date : current_date]
         return data_window
 
 
@@ -264,8 +274,6 @@ class Simulation:
         """
         return self.current_step_index >= len(self.simulation_dates)
 
-
-
 # Example Usage (for testing and demonstration)
 if __name__ == '__main__':
     # Create sample data and portfolio (replace with your actual data loading and portfolio setup)
@@ -285,26 +293,30 @@ if __name__ == '__main__':
 
     print("--- Simulation Start ---")
     window_size = 5
-    initial_data_window = simulation.start(window_size)
-    if initial_data_window is not None:
+    initial_state = simulation.start(window_size) # Get SimulationState
+    if initial_state is not None:
         print("\nInitial Data Window:")
-        print(initial_data_window.tail())
-
+        print(initial_state.data_window.tail())
+        print("\nInitial Simulation State:")
+        print(initial_state) # Print SimulationState object
 
         print("\n--- Simulation Step with Orders ---")
         # Example orders to place at the next step (after the initial window)
         orders_day1 = [
             {'ticker': 'AAPL', 'order_type': 'buy', 'quantity': 10},
-            {'ticker': 'MSFT', 'order_type': 'sell', 'quantity': 5}
+            {'ticker': 'MSFT', 'order_type': 'buy', 'quantity': 5}
         ]
 
-        current_data_window_step1 = simulation.step(window_size, orders=orders_day1) # Pass orders to step()
-        if current_data_window_step1 is not None:
+        next_state_step1 = simulation.step(window_size, orders=orders_day1) # Get next SimulationState
+        if next_state_step1 is not None:
             print("\nData Window after Step 1 (with orders):")
-            print(current_data_window_step1.tail())
-            print(f"Portfolio cash after step 1: ${simulation.portfolio.cash:.2f}")
-            print(f"AAPL holdings after step 1: {simulation.portfolio.holdings['AAPL']}")
-            print(f"MSFT holdings after step 1: {simulation.portfolio.holdings['MSFT']}")
+            print(next_state_step1.data_window.tail())
+            print("\nSimulation State after Step 1 (with orders):")
+            print(next_state_step1) # Print SimulationState object
+            print(f"Portfolio cash after step 1: ${next_state_step1.portfolio.cash:.2f}") # Access portfolio from SimulationState
+            # Corrected lines using get_holding_quantity()
+            print(f"AAPL holdings after step 1: {simulation.portfolio.get_holding_quantity('AAPL')}") # Use getter!
+            print(f"MSFT holdings after step 1: {simulation.portfolio.get_holding_quantity('MSFT')}") # Use getter!
         else:
             print("Simulation ended at step 1.")
 
@@ -312,11 +324,17 @@ if __name__ == '__main__':
     print("\n--- Simulation Steps (Running to End, No Orders) ---")
     step_count = 1 # Start from step 1 as we already did step 1 with orders
     while True:
-        current_data_window = simulation.step(window_size) # No orders passed in subsequent steps
-        if current_data_window is not None:
+        orders_day2 = [
+            {'ticker': 'AAPL', 'order_type': 'sell', 'quantity': 1},
+            {'ticker': 'MSFT', 'order_type': 'sell', 'quantity': 1}
+        ]
+        next_state = simulation.step(window_size, orders_day2) # Get next SimulationState
+        if next_state is not None:
             step_count += 1
-            print(f"\nData Window at Date: {simulation.current_date.date()} (Step {step_count}) - No Orders:")
-            print(current_data_window.tail())
+            print(f"\nData Window at Date: {next_state.current_date.date()} (Step {step_count}) - No Orders:")
+            print(next_state.data_window.tail())
+            print(f"Simulation State at Date: {next_state.current_date.date()} (Step {step_count}) - No Orders:")
+            print(next_state) # Print SimulationState object
         else:
             print("Simulation ended within loop.")
             break
@@ -324,5 +342,7 @@ if __name__ == '__main__':
     print("\n--- Simulation End ---")
     print(f"Is simulation finished? {simulation.is_simulation_finished}")
     print(f"Total steps taken: {step_count}")
-    print(f"Current portfolio cash: ${simulation.portfolio.cash:.2f}")
-    print(f"Current portfolio holdings: {simulation.portfolio.holdings}")
+    print(f"Current portfolio cash: ${simulation.portfolio.cash:.2f}") # Access final portfolio from simulation object
+    # Corrected lines using get_holding_quantity() for final holdings printout
+    print(f"Current portfolio holdings - AAPL: {simulation.portfolio.get_holding_quantity('AAPL')}") # Use getter!
+    print(f"Current portfolio holdings - MSFT: {simulation.portfolio.get_holding_quantity('MSFT')}") # Use getter!
