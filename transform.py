@@ -9,6 +9,7 @@ import numpy as np
 from sklearn.discriminant_analysis import StandardScaler
 from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
+from model.training_agent import TrainingAgent
 import time
 
 from config import RAW_DATA_DIR, RAW_DATA_USED_COLUMNS, TRANSFORMED_DATA_DIR, TICKERS, FEATURE_COLUMNS_STOCK_DATA, N_STEPS, PREPARED_DATA_DIR, PREPARED_TRAIN_DATA_X_FILE, PREPARED_TRAIN_DATES_FILE, PREPARED_EVAL_DATA_X_FILE, PREPARED_EVAL_DATES_FILE
@@ -17,8 +18,11 @@ from model.moving_average import MovingAverage
 from model.portfolio import Portfolio
 from model.rolling_hi_lo import RollingHiLo
 from model.simulation import Simulation
+from model.simulation_state import SimulationState
 from model.ticker_history import TickerHistory
+from model.transaction import Transaction
 from utils.dataframe import print_dataframe_debugging_info
+from utils.obj import print_public_interface 
 
 
 def transform_stock_data(raw_stock_data, tickers=TICKERS, feature_columns=FEATURE_COLUMNS_STOCK_DATA, n_steps=N_STEPS):
@@ -159,19 +163,31 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
 
     model = ModelData(TICKERS, RAW_DATA_DIR)
     model.save_to_csv('model_data/stock.csv')
-    simulations = model.create_simulations(365, 10000)
+    simulations = model.create_simulations(220, 10000)
     
-    os.makedirs('simulations', exist_ok=True)
-    count = 0
-    for sim in simulations:
-        count += 1
-        sim.start(60).to_csv(f'simulations/{count}.csv')
-        for i in range(1, 100):
-            sim.step(60, [{ 'ticker': 'AAPL', 'quantity': 1, 'order_type': 'buy'}]).to_csv(f'simulations/{count}_{i}.csv')
+    sims = []
+    i = 0
+    for simulation in simulations:
+        sims.append(simulation)
+
+        i += 1
+        if (i > 300):
+            break
+
+    agent = TrainingAgent(simulations=sims) # Using LSTM model
+    agent.train_model(window_size=60) # Train for 2 epochs, window size 5
 
     return
 
 '''
+# Example Usage (using the TrainingAgent class from your code):
+if __name__ == '__main__':
+    print_public_interface(Simulation)
+    print_public_interface(SimulationState)
+    print_public_interface(Transaction)
+    print_public_interface(Portfolio)
+'''
+
 if __name__ == '__main__':
     print("\n🎉 Starting Stock Data Transformation and Preparation (Transform Script)...")
 
@@ -183,77 +199,55 @@ if __name__ == '__main__':
 
     print("Transformed and prepared data saved to directories specified in config.py") # Update message
     print("✅ ETL - Transform and Prepare script completed successfully!") # Final success message
-'''
 
-# Example Usage (for testing and demonstration)
+
+'''
+# Example Usage (for testing)
 if __name__ == '__main__':
-    # Create sample data and portfolio (replace with your actual data loading and portfolio setup)
-    dates = pd.to_datetime(['2012-08-01', '2012-08-02', '2012-08-03', '2012-08-06', '2012-08-07', '2012-08-08', '2012-08-09', '2012-08-10']) # Using same dates as sample data
-    tickers = ['AAPL', 'MSFT']
-    # Create MultiIndex for columns - Ticker and OHLCV
-    columns = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Volume', 'MA5', 'MA20']], names=['Ticker', 'OHLCV']) # Added MA5 and MA20 for testing price scaling
-    data_values = np.random.rand(len(dates), len(tickers) * 7) # Adjusted for extra MA columns
-    sample_data = pd.DataFrame(data_values, index=dates, columns=columns) # dates as DatetimeIndex
+    # --- Sample Data and Portfolio Setup (as in previous example) ---
+    dates = pd.to_datetime(['2012-08-01', '2012-08-02', '2012-08-03', '2012-08-06', '2012-08-07', '2012-08-08', '2012-08-09', '2012-08-10'] * 10) # Extended dates for more steps
+    dates.sort_values() # Ensure dates are sorted
+    dates = dates.unique() # Get unique dates if duplicates were introduced
+    tickers = ['AAPL', 'MSFT', 'GOOG'] # Added GOOG to increase output size
+    columns = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Volume', 'MA5', 'MA20']], names=['Ticker', 'OHLCV'])
+    data_values = np.random.rand(len(dates), len(tickers) * 7)
+    sample_data = pd.DataFrame(data_values, index=dates, columns=columns)
     sample_data.index.name = 'Date'
 
     initial_cash = 100000
     sample_portfolio = Portfolio(initial_cash, tickers)
 
-    # Create Simulation instance
-    simulation = Simulation(sample_data, sample_portfolio)
+    # --- Create Multiple Simulations ---
+    num_simulations = 2
+    simulations_list = []
+    for i in range(num_simulations):
+        sim_data = sample_data.copy() # Independent copy for each simulation
+        sim_portfolio = sample_portfolio.copy() # Independent portfolio for each simulation
+        sim = Simulation(sim_data, sim_portfolio)
+        simulations_list.append(sim)
 
-    print("--- Simulation Start ---")
-    window_size = 5
-    initial_state = simulation.start(window_size) # Get SimulationState
-    if initial_state is not None:
-        print("\nInitial Data Window:")
-        print(initial_state.data_window.tail())
-        print("\nInitial Simulation State:")
-        print(initial_state) # Print SimulationState object
+    # --- Prepare Agent Parameters Dynamically ---
+    sample_simulation = simulations_list[0] # Use the first simulation to dynamically determine parameters
+    n_tickers = len(sample_simulation.portfolio.tickers())
+    n_features_per_ticker = 0
+    for col in sample_simulation.data.columns:
+        if col[0] == list(sample_simulation.portfolio.tickers())[0]:
+            n_features_per_ticker += 1
+    n_ticker_features_total = n_features_per_ticker * n_tickers
+    n_portfolio_state_features = 2
+    n_features_total = n_ticker_features_total + n_portfolio_state_features
+    n_output_total = 2 * n_tickers
 
-        print("\n--- Simulation Step with Orders ---")
-        # Example orders to place at the next step (after the initial window)
-        orders_day1 = [
-            {'ticker': 'AAPL', 'order_type': 'buy', 'quantity': 10},
-            {'ticker': 'MSFT', 'order_type': 'buy', 'quantity': 5}
-        ]
+    agent_params = {
+        'n_steps': 5, # Example window size
+        'n_units': 32,
+        'n_features_total': n_features_total, # Dynamically calculated total features
+        'n_output_total': n_output_total  # Dynamically calculated total outputs
+    }
 
-        next_state_step1 = simulation.step(window_size, orders=orders_day1) # Get next SimulationState
-        if next_state_step1 is not None:
-            print("\nData Window after Step 1 (with orders):")
-            print(next_state_step1.data_window.tail())
-            print("\nSimulation State after Step 1 (with orders):")
-            print(next_state_step1) # Print SimulationState object
-            print(f"Portfolio cash after step 1: ${next_state_step1.portfolio.cash:.2f}") # Access portfolio from SimulationState
-            # Corrected lines using get_holding_quantity()
-            print(f"AAPL holdings after step 1: {simulation.portfolio.get_holding_quantity('AAPL')}") # Use getter!
-            print(f"MSFT holdings after step 1: {simulation.portfolio.get_holding_quantity('MSFT')}") # Use getter!
-        else:
-            print("Simulation ended at step 1.")
+    # --- Initialize and Train Training Agent ---
+    agent = TrainingAgent(simulations=simulations_list, model_params=agent_params) # Using LSTM model
+    agent.train_model(window_size=5) # Train for 2 epochs, window size 5
 
-
-    print("\n--- Simulation Steps (Running to End, No Orders) ---")
-    step_count = 1 # Start from step 1 as we already did step 1 with orders
-    while True:
-        orders_day2 = [
-            {'ticker': 'AAPL', 'order_type': 'sell', 'quantity': 1},
-            {'ticker': 'MSFT', 'order_type': 'sell', 'quantity': 1}
-        ]
-        next_state = simulation.step(window_size, orders_day2) # Get next SimulationState
-        if next_state is not None:
-            step_count += 1
-            print(f"\nData Window at Date: {next_state.current_date.date()} (Step {step_count}) - No Orders:")
-            print(next_state.data_window.tail())
-            print(f"Simulation State at Date: {next_state.current_date.date()} (Step {step_count}) - No Orders:")
-            print(next_state) # Print SimulationState object
-        else:
-            print("Simulation ended within loop.")
-            break
-
-    print("\n--- Simulation End ---")
-    print(f"Is simulation finished? {simulation.is_simulation_finished}")
-    print(f"Total steps taken: {step_count}")
-    print(f"Current portfolio cash: ${simulation.portfolio.cash:.2f}") # Access final portfolio from simulation object
-    # Corrected lines using get_holding_quantity() for final holdings printout
-    print(f"Current portfolio holdings - AAPL: {simulation.portfolio.get_holding_quantity('AAPL')}") # Use getter!
-    print(f"Current portfolio holdings - MSFT: {simulation.portfolio.get_holding_quantity('MSFT')}") # Use getter!
+    print("\n--- LSTM Training Agent Run Completed ---")
+'''

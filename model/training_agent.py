@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from model.simulation import Simulation
+from model.portfolio import Portfolio
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler # Import MinMaxScaler
 
@@ -9,7 +10,7 @@ class TrainingAgent:
     Manages the training of a trading model using Simulation objects.
     """
 
-    def __init__(self, simulations, model=None, model_params=None, reward_function=None, reward_weights=None, optimizer=None):
+    def __init__(self, simulations, model=None, model_params=None, optimizer=None):
         """
         Initializes the TrainingAgent.
 
@@ -26,200 +27,203 @@ class TrainingAgent:
         self.simulations = simulations
 
         self.model_params = model_params if model_params is not None else self._get_default_model_params()
+        print(f"Model parameters being used: {self.model_params}") # Debugging print: Print model parameters!
         self.model = model if model is not None else self._create_default_model(self.model_params) # Use provided model or create default
-        self.reward_function = reward_function if reward_function is not None else self._default_reward_function
-        self.reward_weights = reward_weights if reward_weights is not None else self._get_default_reward_weights()
         self.optimizer = optimizer if optimizer is not None else tf.keras.optimizers.Adam() # Default optimizer
-
+        self.previous_portfolio_cash_is_all = True # Track if portfolio was all cash previously for static buy reward
 
     def _get_default_model_params(self):
-        """Returns default LSTM model parameters for buy/sell outputs."""
+        """Returns default LSTM model parameters using simplified feature count."""
         sample_simulation = self.simulations[0] # Assume simulations have same tickers and features
-        n_tickers = len(sample_simulation.portfolio.holdings)
-        n_features_per_ticker = 0
-        for col in sample_simulation.data.columns:
-            if col[0] == list(sample_simulation.portfolio.holdings.keys())[0]: # Just check the first ticker
-                n_features_per_ticker += 1
-        n_features_total = n_features_per_ticker * n_tickers
+        n_tickers = len(sample_simulation.portfolio.tickers())
+
+        # Directly get total features from data column shape
+        n_features_total = sample_simulation.data.columns.shape[0]
+
         n_output_total =  2 * n_tickers # Output for each ticker: [buy_percentage, sell_percentage]
+
+        print(f"Debugging _get_default_model_params (Simplified):") # Debugging print - Updated message
+        print(f"  Number of tickers: {n_tickers}") # Debugging print
+        print(f"  Total features (directly from data columns): {n_features_total}") # Debugging print - Updated message
+        print(f"  Total outputs: {n_output_total}") # Debugging print
 
         return {
             'n_steps': 60, # Example window size, adjust as needed
-            'n_features_total': n_features_total,
-            'n_units': 64,      # LSTM units
+            'n_features_total': n_features_total, # Use direct feature count
+            'n_units': 64,     # LSTM units
             'n_output_total': n_output_total
         }
-
 
     def _create_default_model(self, model_params):
         """Creates the default LSTM model using build_model_multi_output function."""
         return tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(self.model_params.n_steps, self.model_params.n_features_total)),
-            tf.keras.layers.LSTM(units=self.model_params.n_units, return_sequences=True),
-            tf.keras.layers.LSTM(units=self.model_params.n_units),
-            tf.keras.layers.Dense(units=self.model_params.n_units//2, activation='relu'),
-            tf.keras.layers.Dense(units=self.model_params.n_output_total, activation='sigmoid') # Sigmoid for percentage outputs
+            tf.keras.layers.Input(shape=(model_params['n_steps'], model_params['n_features_total'])), # Use dictionary key access
+            tf.keras.layers.LSTM(units=model_params['n_units'], return_sequences=True), # Use dictionary key access
+            tf.keras.layers.LSTM(units=model_params['n_units']), # Use dictionary key access
+            tf.keras.layers.Dense(units=model_params['n_units']//2, activation='relu'), # Use dictionary key access
+            tf.keras.layers.Dense(units=model_params['n_output_total'], activation='sigmoid') # Sigmoid for percentage outputs # Use dictionary key access
         ])
 
 
-    def _default_reward_function(self, simulation):
+    def reward_function(self, simulation_state):
         """
-        Default reward function based on portfolio value change.
-        You can customize this to incorporate more sophisticated metrics ( Sharpe ratio, etc.)
+        Reward function returning a DataFrame with output-specific rewards based on transaction rules.
         """
-        current_portfolio_value = simulation.portfolio.value() # Use valuations for reward calculation
-        previous_date_index = simulation.simulation_dates.index(simulation.current_date) - 1
-        if previous_date_index >= 0:
-            previous_portfolio_value = simulation.portfolio.value() # Use valuations for reward calculation
-            reward = current_portfolio_value - previous_portfolio_value
-        else:
-            reward = 0 # No reward for the first step
+        tickers = simulation_state.portfolio.tickers()
+        output_names = []
+        for ticker in tickers:
+            output_names.extend([f'{ticker}_buy', f'{ticker}_sell'])
+        reward_dict = {name: 0.5 for name in output_names}
 
-        return reward
+        profitable_sell_tickers = []
+        transactions = simulation_state.portfolio.get_transactions_on_date(simulation_state.current_date)
+        for trade in transactions:
+            if trade.transaction_type == 'sell' and trade.profit > 0:
+                profitable_sell_tickers.append(trade.ticker)
+
+        # --- Penalize Buy on Profitable Sell Day, Reward Buy on Non-Profitable Sell Day ---
+        buy_penalty_on_profit_sell_day = 0.01  # Penalty for buying on a profitable sell day
+        buy_reward_static = 0.75  # Static reward for buy orders on other days
+
+        for trade in transactions:
+            if trade.transaction_type == 'buy':
+                if trade.ticker in profitable_sell_tickers:
+                    reward_dict[f"{trade.ticker}_buy"] = 0
+                    print(f"   - Reward: Buy Penalty of 0 for buying {trade.quantity} shares of {trade.ticker} on profitable sell day")
+                else:
+                    reward_dict[f"{trade.ticker}_buy"] += buy_reward_static
+                    print(f"   - Reward: Static Buy Reward of {buy_reward_static:.2f} for buying {trade.quantity} shares of {trade.ticker}")
+
+        # --- Profit/Loss Based Sell Reward/Punishment ---
+        sell_reward_profit_factor = 0.1
+        sell_punishment_loss_factor = 0.05
+        for trade in transactions:
+            if trade.transaction_type == 'sell':
+                if trade.profit > 0:
+                    reward_dict[f"{trade.ticker}_sell"] = min(1, trade.profit / 1000)
+                    print(f"   - Reward: Sell Profit Reward of {(trade.profit * sell_reward_profit_factor):.2f} for selling {trade.quantity} shares of {trade.ticker} (Profit: ${trade.profit:.2f})")
+                elif trade.profit < 0:
+                    reward_dict[f"{trade.ticker}_sell"] = 0
+                    print(f"   - Reward: Sell Loss Punishment of 0 for selling {trade.quantity} shares of {trade.ticker} (Loss: ${trade.profit:.2f})")
+
+        return reward_dict
 
 
-    def _get_default_reward_weights(self):
-        """
-        Returns default reward weights.
-        This is a placeholder. You might want to weight different components of your reward.
-        """
-        return {'portfolio_value_change': 1.0} # Example: weight for portfolio value change
-
-
-    def _model_output_to_orders(self, model_output, tickers):
+    def _model_output_to_orders(self, model_output, tickers, simulation_state):
         """
         Converts the model's output (buy/sell percentages) to a list of orders.
-
-        Args:
-            model_output (tf.Tensor): Model output tensor of shape (1, n_output_total).
-            tickers (list): List of tickers corresponding to the model outputs.
-            current_cash (float): Portfolio's current cash balance.
-            current_holdings (dict): Portfolio's current stock holdings.
-            last_valuations (dict): Portfolio's last known valuations (closing prices).
-
-        Returns:
-            list: List of order dictionaries.
         """
         probabilities = model_output.numpy().flatten() # Flatten to 1D array
         orders = []
         num_tickers = len(tickers)
 
         for i, ticker in enumerate(tickers):
-            buy_percentage = probabilities[i * 2]      # Buy percentage is at even indices
+            buy_percentage = probabilities[i * 2]     # Buy percentage is at even indices
             sell_percentage = probabilities[i * 2 + 1] # Sell percentage is at odd indices
 
             # --- Buy Orders ---
-            cash_to_use_for_buy = self.portfolio.cash() * buy_percentage
+            cash_to_use_for_buy = simulation_state.portfolio.cash * buy_percentage
             if cash_to_use_for_buy > 0:
-                buy_quantity = np.round(cash_to_use_for_buy / self.portfolio.latest_valuations[ticker]) # Calculate buy quantity based on available cash and open price
+                buy_quantity = int(np.round(cash_to_use_for_buy / simulation_state.stock_values[ticker])) # Calculate buy quantity based on available cash and open price
                 if buy_quantity > 0:
                     orders.append({'ticker': ticker, 'order_type': 'buy', 'quantity': buy_quantity})
                     print(f"  - Ticker: {ticker}, Buy %: {buy_percentage:.2f}, Cash to use: ${cash_to_use_for_buy:.2f}, Quantity: {buy_quantity}")
 
 
             # --- Sell Orders ---
-            quant_to_sell = np.round(self.portfolio.holdings[ticker] * sell_percentage) # Quantity to sell
+            quant_to_sell = int(np.round(simulation_state.portfolio.get_holding_quantity(ticker) * sell_percentage)) # Quantity to sell
             if quant_to_sell > 0:
                 orders.append({'ticker': ticker, 'order_type': 'sell', 'quantity': quant_to_sell})
-                print(f"  - Ticker: {ticker}, Sell %: {sell_percentage:.2f}, Quantity to sell: ${quant_to_sell:.2f}")
+                print(f"  - Ticker: {ticker}, Sell %: {sell_percentage:.2f}, Quantity to sell: {quant_to_sell}")
 
         return orders
 
-
-    def train_model(self, window_size=60, epochs=1):
+    def train_model(self, window_size=60):
         """
-        Trains the model using the provided simulations.
-
-        Args:
-            window_size (int): Size of the data window passed to the model.
-            epochs (int): Number of times to iterate through the entire set of simulations.
+        Trains the model using the provided simulations with output-specific targets.
         """
         if not isinstance(window_size, int) or window_size <= 0:
             raise ValueError("window_size must be a positive integer.")
-        if not isinstance(epochs, int) or epochs <= 0:
-            raise ValueError("epochs must be a positive integer.")
 
-        print(f"Starting model training for {epochs} epochs using window size {window_size}...")
+        print(f"Starting model training using window size {window_size}...")
 
         X_train_all_simulations = [] # Collect training data across simulations
-        for epoch in range(epochs):
-            print(f"\n--- Epoch {epoch+1}/{epochs} ---")
-            for sim_index, simulation in enumerate(self.simulations):
-                print(f"\n-- Simulation {sim_index+1}/{len(self.simulations)} --")
-                initial_data_window = simulation.start(window_size=window_size) # Start each simulation
+        for sim_index, simulation in enumerate(self.simulations):
+            print(f"\n-- Simulation {sim_index+1}/{len(self.simulations)} --")
+            current_state = simulation.start(window_size) # Start each simulation, get SimulationState
 
-                if initial_data_window is None:
-                    print(f"Warning: No initial data window for simulation {sim_index+1}. Skipping.")
-                    continue # Skip to the next simulation if no data window
+            if current_state is None:
+                print(f"Warning: No initial data window for simulation {sim_index+1}. Skipping.")
+                continue # Skip to the next simulation if no data window
 
-                step_count = 0
-                global_index = 0 # Index to track position in the simulation data
-                simulation_history_data = [] # Store data windows and rewards for the entire simulation
+            step_count = 0
+            global_index = 0 # Index to track position in the simulation data
+            simulation_history_data = [] # Store data windows, rewards, and orders for the entire simulation
 
-                while True:
-                    # 1. Prepare Input Data for Model
-                    current_data_window = simulation.get_current_data_window(window_size)
-                    if current_data_window is None:
-                        break # End of simulation
+            while True:
+                # 1. Prepare Input Data for Model
+                if current_state is None:
+                    break # End of simulation
 
-                    X_current = np.array([current_data_window.values]) # Shape: (1, window_size, n_features) - adjust as needed for your model
-                    tickers = [col[0] for col in current_data_window.columns.levels[0]] # Get tickers in the current window
+                tickers = current_state.portfolio.tickers() # Get tickers in the current window
 
-                    # 2. Model Prediction
-                    with tf.GradientTape() as tape_outer: # Outer tape for gradient calculation across day
-                        orders_output = self.model(X_current) # Get model output (probabilities)
-                        orders = self._model_output_to_orders(orders_output, tickers) # Convert model output to order format
+                # 2. Model Prediction
+                X_current = np.array([current_state.data_window.values]) # Shape: (1, window_size, n_features)
 
-                        # 3. Simulation Step (execute orders and get next data window)
-                        next_data_window = simulation.step(window_size=window_size, orders=orders) # Pass orders to step()
+                print(f'Simulating {current_state.current_date} closing prices: {current_state.stock_values}')
 
-                        if next_data_window is not None:
-                            step_count += 1
-                            # 4. Reward Calculation
-                            reward = self.reward_function(simulation) # Calculate reward based on simulation state
+                orders_output = self.model(X_current) # Get model output (probabilities)
+                orders = self._model_output_to_orders(orders_output, tickers, current_state) # Pass simulation state to order conversion
 
-                            # Store data and reward for this step in simulation history
-                            simulation_history_data.append({'data_window': X_current, 'reward': reward})
+                # 3. Simulation Step (execute orders and get next data window)
+                current_state = simulation.step(window_size, orders=orders) # Pass orders to step()
 
-                            if step_count % 10 == 0: # Print progress every 10 steps
-                                print(f"  - Simulation {sim_index+1}, Step {step_count}, Date: {simulation.current_date.date()}, Reward: {reward:.2f}, Portfolio Value: ${simulation.portfolio.value(simulation.valuations[simulation.current_date]):.2f}")
-                            global_index += 1 # Increment global index for next step
+                if current_state is not None:
+                    step_count += 1
+                    # 4. Reward Calculation
+                    reward_df = self.reward_function(current_state) # Calculate reward based on simulation state - now returns DataFrame
 
-                        else:
-                            print(f"  Simulation {sim_index+1} ended after {step_count} steps. Final Portfolio Value: ${simulation.portfolio.value(simulation.valuations[simulation.current_date]):.2f}")
-                            break # End of simulation
+                    # Store data, reward, and orders for this step in simulation history
+                    simulation_history_data.append({'data_window': X_current, 'reward_df': reward_df, 'orders': orders}) # Store reward_df - CHANGED
 
+                    print(f" - Simulation {sim_index+1}, Step {step_count}, Date: {simulation.current_date.date()}, Reward DataFrame:\n{str(reward_df)}, Portfolio Value: ${simulation.portfolio.value(simulation.valuations[simulation.current_date]):.2f}") # Print DataFrame reward
 
-                # --- Epoch-based Model Update (Simplified Reward-Based Learning) ---
-                # Process collected history data for the entire simulation to update model once per simulation (epoch).
-                if simulation_history_data: # Only train if there was simulation data
-                    print(f"  - Training model on simulation {sim_index+1} history...")
-                    simulation_X_train = np.concatenate([item['data_window'] for item in simulation_history_data], axis=0) # Stack data windows
-                    simulation_rewards = np.array([item['reward'] for item in simulation_history_data]) # Rewards
+                    global_index += 1 # Increment global index for next step
 
-                    with tf.GradientTape() as tape_inner: # Inner tape for loss calculation - Calculate for entire simulation
-                        output_probs_tape = self.model(simulation_X_train) # Get model output for the entire simulation
-                        target_probs = np.zeros_like(output_probs_tape) # Initialize target probabilities for the simulation
-
-                        # Assign target probabilities based on rewards for each step in the simulation
-                        for step_idx, reward_val in enumerate(simulation_rewards):
-                            if reward_val > 0:
-                                target_probs[step_idx] = np.ones_like(output_probs_tape[step_idx]) * 0.9 # Encourage action for positive reward
-                            else:
-                                target_probs[step_idx] = np.zeros_like(output_probs_tape[step_idx]) # Discourage for negative reward
-
-                        loss = tf.keras.losses.MeanSquaredError()(target_probs, output_probs_tape) # MSE loss for entire simulation
-
-                    gradients = tape_inner.gradient(loss, self.model.trainable_variables) # Gradients for simulation loss
-                    self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables)) # Apply gradients
-
-                    print(f"    - Simulation {sim_index+1} training completed. Loss: {loss.numpy():.4f}")
                 else:
-                    print(f"  - No training data for simulation {sim_index+1} (simulation history empty).")
+                    print(f"  Simulation {sim_index+1} ended after {step_count} steps.")
+                    break # End of simulation
+
+
+            # --- Epoch-based Model Update with Output-Specific Targets ---
+            if simulation_history_data: # Only train if there was simulation data
+                print(f"  - Training model on simulation {sim_index+1} history (output-specific targets)...")
+                simulation_X_train = np.concatenate([item['data_window'] for item in simulation_history_data], axis=0) # Stack data windows
+                simulation_reward_dicts = [item['reward_df'] for item in simulation_history_data] # List of reward DataFrames - CHANGED
+
+                with tf.GradientTape() as tape_inner: # Inner tape for loss calculation
+                    output_probs_tape = self.model(simulation_X_train) # Get model output for the entire simulation
+                    target_probs = np.zeros_like(output_probs_tape) # Initialize target probabilities
+
+                    # Generate output-specific target probabilities based on DataFrame rewards and orders
+                    for step_idx in range(len(simulation_reward_dicts)): # Iterate through steps
+                        reward_df_step = simulation_reward_dicts[step_idx] # Get reward DataFrame for this step
+
+                        for i, ticker in enumerate(tickers):
+                            target_probs[step_idx, i * 2] = reward_df_step[f'{ticker}_buy']
+                            target_probs[step_idx, i * 2 + 1] = reward_df_step[f'{ticker}_sell']
+
+                    loss = tf.keras.losses.MeanSquaredError()(target_probs, output_probs_tape) # MSE loss
+
+                gradients = tape_inner.gradient(loss, self.model.trainable_variables) # Gradients for simulation loss
+                self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables)) # Apply gradients
+
+                print(f"  - Simulation {sim_index+1} training completed. Loss: {loss.numpy():.4f}")
+            else:
+                print(f" - No training data for simulation {sim_index+1} (simulation history empty).")
 
 
         print("\n--- Training Complete ---")
-
 
 
 # Example Usage (for testing)
@@ -246,10 +250,27 @@ if __name__ == '__main__':
         sim = Simulation(sim_data, sim_portfolio)
         simulations_list.append(sim)
 
+    # --- Prepare Agent Parameters Dynamically ---
+    sample_simulation = simulations_list[0] # Use the first simulation to dynamically determine parameters
+    n_tickers = len(sample_simulation.portfolio.tickers)
+    n_features_per_ticker = 0
+    for col in sample_simulation.data.columns:
+        if col[0] == sample_simulation.portfolio.tickers[0]:
+            n_features_per_ticker += 1
+    n_ticker_features_total = n_features_per_ticker * n_tickers
+    n_portfolio_state_features = 2 + n_tickers
+    n_features_total = n_ticker_features_total + n_portfolio_state_features
+    n_output_total = 2 * n_tickers
+
+    agent_params = {
+        'n_steps': 5, # Example window size
+        'n_units': 32,
+        'n_features_total': n_features_total, # Dynamically calculated total features
+        'n_output_total': n_output_total  # Dynamically calculated total outputs
+    }
 
     # --- Initialize and Train Training Agent ---
-    agent_params = {'n_steps': 5, 'n_units': 32, 'n_features_total': 3 * 7, 'n_output_total': 3} # Example params, matching tickers and features
     agent = TrainingAgent(simulations=simulations_list, model_params=agent_params) # Using LSTM model
-    agent.train_model(window_size=5, epochs=2) # Train for 2 epochs, window size 5
+    agent.train_model(window_size=5) # Train for 1 epoch, window size 5
 
     print("\n--- LSTM Training Agent Run Completed ---")
