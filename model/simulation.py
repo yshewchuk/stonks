@@ -60,12 +60,9 @@ class Simulation:
 
     def _calculate_initial_portfolio_value(self):
         """Calculates and stores the initial portfolio value at the start of the simulation."""
-        initial_stock_prices = {}
         first_date = self.simulation_dates[0]
-        for ticker in self.portfolio.tickers():
-            initial_stock_prices[ticker] = self.valuations[first_date][ticker] # Use original prices for initial valuation
-        self.portfolio.update_valuations(pd.to_datetime(first_date), initial_stock_prices) # Pass date as Timestamp
-        self.initial_portfolio_value = self.portfolio.value(initial_stock_prices) # Pass initial prices
+
+        self.initial_portfolio_value = self.portfolio.update_valuations(pd.to_datetime(first_date), self.valuations[first_date]) # Pass date as Timestamp
         if self.initial_portfolio_value == 0:
             self.initial_portfolio_value = self.portfolio.cash
 
@@ -117,17 +114,12 @@ class Simulation:
         Calculates and updates portfolio metrics for a given date in self.data.
         ... (rest of docstring) ...
         """
-        stock_prices_at_date = {}
-        for ticker in self.portfolio.tickers():
-            stock_prices_at_date[ticker] = self.valuations[current_date][ticker] # Use original closing prices from valuations
-
-        self.portfolio.update_valuations(pd.to_datetime(current_date), stock_prices_at_date) # Pass date as Timestamp
-        portfolio_value = self.portfolio.value(stock_prices_at_date) # Pass current prices
+        portfolio_value = self.portfolio.update_valuations(pd.to_datetime(current_date), self.valuations[current_date]) # Pass date as Timestamp
         relative_value = portfolio_value / self.initial_portfolio_value
         self.data.loc[current_date, 'Relative Value'] = relative_value
         self.data.loc[current_date, 'Cash Percent of Value'] = self.portfolio.cash / portfolio_value if portfolio_value != 0 else 0
         for ticker in self.portfolio.tickers():
-            ticker_holding_value = self.portfolio.get_holding_quantity(ticker) * stock_prices_at_date[ticker] # Use getter
+            ticker_holding_value = self.portfolio.get_holding_quantity(ticker) * self.valuations[current_date][ticker] # Use getter
             self.data.loc[current_date, (ticker, 'Holdings Percent of Value')] = ticker_holding_value / portfolio_value if portfolio_value != 0 else 0
 
 
@@ -166,7 +158,7 @@ class Simulation:
         if data_window is None: # Handle case where no data window could be created (e.g., no data)
             return None
 
-        return SimulationState(data_window=data_window, portfolio=self.portfolio, current_date=self.current_date) # Return SimulationState
+        return SimulationState(data_window=data_window, portfolio=self.portfolio, stock_values=self.valuations[current_date], current_date=current_date) # Return SimulationState
 
 
     def step(self, window, orders=None):
@@ -208,7 +200,7 @@ class Simulation:
         if data_window is None: # Handle case where no data window could be created
             return None
 
-        return SimulationState(data_window=data_window, portfolio=self.portfolio, current_date=self.current_date) # Return SimulationState
+        return SimulationState(data_window=data_window, portfolio=self.portfolio, stock_values=self.valuations[current_date], current_date=current_date) # Return SimulationState
 
 
     def _execute_orders(self, orders, current_date):

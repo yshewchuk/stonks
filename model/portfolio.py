@@ -28,8 +28,8 @@ class Portfolio:
         # __holdings now stores quantity and total_cost directly
         self.__holdings = {ticker: {'quantity': 0, 'total_cost': 0.0} for ticker in tickers}
         self.__tickers = list(tickers)  # Store tickers as a list for consistent iteration
-        self.latest_valuation_date = None
-        self.value_history = {}  # Dictionary to store portfolio value history (date: value)
+        self.__latest_valuation_date = None
+        self.__value_history = {}  # Dictionary to store portfolio value history (date: value)
         self.__transaction_log = []  # **Private attribute**: Transaction log now stores Transaction objects
 
 
@@ -81,8 +81,8 @@ class Portfolio:
                 raise ValueError(f"Price for ticker '{ticker}' in stock_values must be a non-negative number.")
 
         portfolio_value = self.value(stock_values) # Calculate portfolio value with provided stock_values
-        self.value_history[date] = portfolio_value # Record portfolio value in history
-        self.latest_valuation_date = date # Update latest valuation date
+        self.__value_history[date] = portfolio_value # Record portfolio value in history
+        self.__latest_valuation_date = date # Update latest valuation date
         return portfolio_value
 
 
@@ -93,9 +93,9 @@ class Portfolio:
         Returns:
             float: The total portfolio value at the latest date evaluated, or just cash if no valuation yet.
         """
-        if self.latest_valuation_date is None:
+        if self.__latest_valuation_date is None:
             return self.__cash # Return cash if no valuation has been set yet
-        return self.value_history[self.latest_valuation_date]
+        return self.__value_history[self.__latest_valuation_date]
 
 
     def value(self, stock_values):
@@ -284,8 +284,8 @@ class Portfolio:
         """
         portfolio_copy = Portfolio(self.cash, self.__tickers)
         portfolio_copy.__holdings = {ticker: holding_data.copy() for ticker, holding_data in self.__holdings.items()}
-        portfolio_copy.latest_valuation_date = self.latest_valuation_date
-        portfolio_copy.value_history = self.value_history.copy()
+        portfolio_copy.__latest_valuation_date = self.__latest_valuation_date
+        portfolio_copy.__value_history = self.__value_history.copy()
         portfolio_copy.__transaction_log = list(self.transaction_log) # Create a new list of Transaction objects
         return portfolio_copy
 

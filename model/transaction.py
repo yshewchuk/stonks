@@ -38,25 +38,70 @@ class Transaction:
         if profit is not None and not isinstance(profit, (int, float)):
             raise ValueError("profit must be a number or None.")
 
+        # Store attributes with a leading underscore to indicate they are "protected"
+        self.__date = date
+        self.__ticker = ticker
+        self.__transaction_type = transaction_type
+        self.__quantity = quantity
+        self.__price = price
+        self.__transaction_cost = transaction_cost
+        self.__transaction_proceeds = transaction_proceeds
+        self.__total_cost = total_cost
+        self.__profit = profit
 
-        self.date = date
-        self.ticker = ticker
-        self.transaction_type = transaction_type
-        self.quantity = quantity
-        self.price = price
-        self.transaction_cost = transaction_cost
-        self.transaction_proceeds = transaction_proceeds
-        self.total_cost = total_cost
-        self.profit = profit
+    @property
+    def date(self):
+        """Date of the transaction."""
+        return self.__date
+
+    @property
+    def ticker(self):
+        """Stock ticker symbol."""
+        return self.__ticker
+
+    @property
+    def transaction_type(self):
+        """Transaction type ('buy' or 'sell')."""
+        return self.__transaction_type
+
+    @property
+    def quantity(self):
+        """Number of shares involved."""
+        return self.__quantity
+
+    @property
+    def price(self):
+        """Price per share."""
+        return self.__price
+
+    @property
+    def transaction_cost(self):
+        """Transaction fee."""
+        return self.__transaction_cost
+
+    @property
+    def transaction_proceeds(self):
+        """Proceeds from a sell transaction (revenue after fees)."""
+        return self.__transaction_proceeds
+
+    @property
+    def total_cost(self):
+        """Total cost of a buy transaction (cost + fees)."""
+        return self.__total_cost
+
+    @property
+    def profit(self):
+        """Profit from a sell transaction."""
+        return self.__profit
 
     def __repr__(self):
         """
         Provides a readable string representation of the Transaction object.
         """
-        if self.transaction_type == 'buy':
-            return (f"Transaction(date={self.date.strftime('%Y-%m-%d')}, ticker='{self.ticker}', "
-                    f"type='buy', quantity={self.quantity}, price={self.price:.2f}, total_cost={self.total_cost:.2f})")
-        elif self.transaction_type == 'sell':
-            return (f"Transaction(date={self.date.strftime('%Y-%m-%d')}, ticker='{self.ticker}', "
-                    f"type='sell', quantity={self.quantity}, price={self.price:.2f}, proceeds={self.transaction_proceeds:.2f}, profit={self.profit:.2f})")
+        if self.__transaction_type == 'buy':
+            return (f"Transaction(date={self.__date.strftime('%Y-%m-%d')}, ticker='{self.__ticker}', "
+                    f"type='buy', quantity={self.__quantity}, price={self.__price:.2f}, total_cost={self.__total_cost:.2f})")
+        elif self.__transaction_type == 'sell':
+            return (f"Transaction(date={self.__date.strftime('%Y-%m-%d')}, ticker='{self.__ticker}', "
+                    f"type='sell', quantity={self.__quantity}, price={self.__price:.2f}, proceeds={self.__transaction_proceeds:.2f}, profit={self.__profit:.2f})")
         return super().__repr__() # Fallback for any other cases
