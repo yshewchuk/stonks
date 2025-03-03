@@ -181,11 +181,13 @@ class TrainingAgent:
                 simulation_history_data.append({'data_window': X_current, 'reward_df': reward_df, 'orders': orders}) # Store reward_df - CHANGED
 
                 print(f'Portfolio value: {current_state.portfolio.latest_value()}, cash: {current_state.portfolio.cash}')
-                for i, ticker in tickers:
+                
+                probs = orders_output.numpy().flatten() # Flatten to 1D array
+                for i, ticker in enumerate(tickers):
                     print(f'Ticker: {ticker}')
                     print(f' - closing: {current_state.stock_values[ticker]}')
                     print(f' - holding: {current_state.portfolio.get_holding_quantity(ticker)}')
-                    print(f' - outputs: {orders_output[i * 2]}, {orders_output[i * 2 + 1]}')
+                    print(f' - outputs: {probs[i * 2]}, {probs[i * 2 + 1]}')
                     print(f' - orders: {list(filter(lambda o: o['ticker'] == ticker, orders))}')
                     print(f' - buy reward: {reward_df[f'{ticker}_buy']}')
                     print(f' - sell reward: {reward_df[f'{ticker}_sell']}')
