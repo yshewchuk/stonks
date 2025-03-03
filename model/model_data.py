@@ -6,6 +6,7 @@ import pandas as pd
 from model.moving_average import MovingAverage 
 from model.portfolio import Portfolio 
 from model.rolling_hi_lo import RollingHiLo 
+from model.max_percent_change_per_day import DailyPercentChange 
 from model.simulation import Simulation 
 from model.ticker_history import TickerHistory 
 
@@ -116,6 +117,7 @@ class ModelData:
             RollingHiLo(5).extend(df)
             RollingHiLo(20).extend(df)
             RollingHiLo(50).extend(df)
+            DailyPercentChange(30).extend(df)
         except ValueError as e: # Catch potential errors from indicator calculations
             print(f"Error during performance indicator calculation: {e}")
             return None

@@ -7,19 +7,22 @@ class SimulationState:
 
     Includes the current data window, the portfolio, and the current date.
     """
-    def __init__(self, data_window, portfolio, stock_values, current_date):
+    def __init__(self, historical_data_window, complete_simulation_data, portfolio, stock_values, current_date):
         """
         Initializes a SimulationState object.
 
         Args:
-            data_window (pd.DataFrame): The data window for the current step.
+            historical_data_window (pd.DataFrame): The historical data that can be used to train or execute the model.
+            complete_simulation_data (pd.DataFrame): The complete set of model data for the simulation, unscaled and containing additional columns which can be used for evaluation purposes.
             portfolio (Portfolio): The current Portfolio object.
             stock_values (dict): Dictionary of tickers to their current closing prices.
             current_date (pd.Timestamp): The current simulation date.
         """
 
-        if not isinstance(data_window, pd.DataFrame):
-            raise ValueError("data_window must be a dataframe")
+        if not isinstance(historical_data_window, pd.DataFrame):
+            raise ValueError("historical_data_window must be a dataframe")
+        if not isinstance(complete_simulation_data, pd.DataFrame):
+            raise ValueError("complete_simulation_data must be a dataframe")
         if not isinstance(portfolio, Portfolio):
             raise ValueError("portfolio must be a Portfolio object.")
         if not isinstance(stock_values, dict):
@@ -27,7 +30,8 @@ class SimulationState:
         if not isinstance(current_date, pd.Timestamp):
             raise ValueError("current_date must be a pandas timestamp.")
         
-        self.__data_window = data_window
+        self.__historical_data_window = historical_data_window
+        self.__complete_simulation_data = complete_simulation_data
         self.__portfolio = portfolio
         self.__stock_values = stock_values
         self.__current_date = current_date
@@ -39,8 +43,12 @@ class SimulationState:
         return f"SimulationState(date={self.current_date.strftime('%Y-%m-%d') if self.current_date else None}, portfolio_value=${self.portfolio.latest_value():.2f})"
     
     @property
-    def data_window(self):
-        return self.__data_window
+    def historical_data_window(self):
+        return self.__historical_data_window
+    
+    @property
+    def complete_simulation_data(self):
+        return self.__complete_simulation_data
     
     @property
     def portfolio(self):

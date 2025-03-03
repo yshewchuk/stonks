@@ -171,7 +171,7 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
         sims.append(simulation)
 
         i += 1
-        if (i > 300):
+        if (i > 600):
             break
 
     agent = TrainingAgent(simulations=sims) # Using LSTM model
@@ -199,7 +199,6 @@ if __name__ == '__main__':
 
     print("Transformed and prepared data saved to directories specified in config.py") # Update message
     print("✅ ETL - Transform and Prepare script completed successfully!") # Final success message
-
 
 '''
 # Example Usage (for testing)

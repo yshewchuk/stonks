@@ -70,41 +70,44 @@ class TrainingAgent:
         Reward function returning a DataFrame with output-specific rewards based on transaction rules.
         """
         tickers = simulation_state.portfolio.tickers()
+
         output_names = []
         for ticker in tickers:
             output_names.extend([f'{ticker}_buy', f'{ticker}_sell'])
-        reward_dict = {name: 0.5 for name in output_names}
+        reward_dict = {name: 0.0 for name in output_names}
 
-        profitable_sell_tickers = []
-        transactions = simulation_state.portfolio.get_transactions_on_date(simulation_state.current_date)
-        for trade in transactions:
-            if trade.transaction_type == 'sell' and trade.profit > 0:
-                profitable_sell_tickers.append(trade.ticker)
+        buy_tickers = []
+        sell_tickers = []
 
-        # --- Penalize Buy on Profitable Sell Day, Reward Buy on Non-Profitable Sell Day ---
-        buy_penalty_on_profit_sell_day = 0.01  # Penalty for buying on a profitable sell day
-        buy_reward_static = 0.75  # Static reward for buy orders on other days
+        cash = simulation_state.portfolio.cash
+        cash_percent = cash / simulation_state.portfolio.latest_value()
 
-        for trade in transactions:
-            if trade.transaction_type == 'buy':
-                if trade.ticker in profitable_sell_tickers:
-                    reward_dict[f"{trade.ticker}_buy"] = 0
-                    print(f"   - Reward: Buy Penalty of 0 for buying {trade.quantity} shares of {trade.ticker} on profitable sell day")
-                else:
-                    reward_dict[f"{trade.ticker}_buy"] += buy_reward_static
-                    print(f"   - Reward: Static Buy Reward of {buy_reward_static:.2f} for buying {trade.quantity} shares of {trade.ticker}")
+        for ticker in tickers:
+            increase = simulation_state.complete_simulation_data.loc[simulation_state.current_date, (ticker, 'MaxPI30')]
+            decrease = simulation_state.complete_simulation_data.loc[simulation_state.current_date, (ticker, 'MaxPD30')]
 
-        # --- Profit/Loss Based Sell Reward/Punishment ---
-        sell_reward_profit_factor = 0.1
-        sell_punishment_loss_factor = 0.05
-        for trade in transactions:
-            if trade.transaction_type == 'sell':
-                if trade.profit > 0:
-                    reward_dict[f"{trade.ticker}_sell"] = min(1, trade.profit / 1000)
-                    print(f"   - Reward: Sell Profit Reward of {(trade.profit * sell_reward_profit_factor):.2f} for selling {trade.quantity} shares of {trade.ticker} (Profit: ${trade.profit:.2f})")
-                elif trade.profit < 0:
-                    reward_dict[f"{trade.ticker}_sell"] = 0
-                    print(f"   - Reward: Sell Loss Punishment of 0 for selling {trade.quantity} shares of {trade.ticker} (Loss: ${trade.profit:.2f})")
+            if cash > 0 and increase > abs(decrease) and increase > (0.02 / cash_percent):
+                buy_tickers.append(ticker)
+
+            holdings = simulation_state.portfolio.get_holding_quantity(ticker)
+            stock_percent = holdings * simulation_state.stock_values[ticker] / simulation_state.portfolio.latest_value()
+
+            if holdings > 0 and abs(decrease) > increase and abs(decrease) < (0.02 / stock_percent):
+                sell_tickers.append(ticker)
+
+        total_dpi = 0
+        buy_dpi = {}
+
+        for ticker in buy_tickers:
+            dpi = simulation_state.complete_simulation_data.loc[simulation_state.current_date, (ticker, 'MaxDPI30')]
+            buy_dpi[ticker] = dpi
+            total_dpi += dpi
+
+        for ticker in buy_tickers:
+            reward_dict[f'{ticker}_buy'] = 0.3 * buy_dpi[ticker] / total_dpi
+
+        for ticker in sell_tickers:
+            reward_dict[f'{ticker}_sell'] = 1.0
 
         return reward_dict
 
@@ -127,14 +130,11 @@ class TrainingAgent:
                 buy_quantity = int(np.round(cash_to_use_for_buy / simulation_state.stock_values[ticker])) # Calculate buy quantity based on available cash and open price
                 if buy_quantity > 0:
                     orders.append({'ticker': ticker, 'order_type': 'buy', 'quantity': buy_quantity})
-                    print(f"  - Ticker: {ticker}, Buy %: {buy_percentage:.2f}, Cash to use: ${cash_to_use_for_buy:.2f}, Quantity: {buy_quantity}")
-
 
             # --- Sell Orders ---
             quant_to_sell = int(np.round(simulation_state.portfolio.get_holding_quantity(ticker) * sell_percentage)) # Quantity to sell
             if quant_to_sell > 0:
                 orders.append({'ticker': ticker, 'order_type': 'sell', 'quantity': quant_to_sell})
-                print(f"  - Ticker: {ticker}, Sell %: {sell_percentage:.2f}, Quantity to sell: {quant_to_sell}")
 
         return orders
 
@@ -147,7 +147,6 @@ class TrainingAgent:
 
         print(f"Starting model training using window size {window_size}...")
 
-        X_train_all_simulations = [] # Collect training data across simulations
         for sim_index, simulation in enumerate(self.simulations):
             print(f"\n-- Simulation {sim_index+1}/{len(self.simulations)} --")
             current_state = simulation.start(window_size) # Start each simulation, get SimulationState
@@ -168,31 +167,34 @@ class TrainingAgent:
                 tickers = current_state.portfolio.tickers() # Get tickers in the current window
 
                 # 2. Model Prediction
-                X_current = np.array([current_state.data_window.values]) # Shape: (1, window_size, n_features)
+                X_current = np.array([current_state.historical_data_window.values]) # Shape: (1, window_size, n_features)
 
-                print(f'Simulating {current_state.current_date} closing prices: {current_state.stock_values}')
+                print(f'Simulating {current_state.current_date}, Step {step_count}')
 
                 orders_output = self.model(X_current) # Get model output (probabilities)
                 orders = self._model_output_to_orders(orders_output, tickers, current_state) # Pass simulation state to order conversion
 
+                # 3. Reward Calculation
+                reward_df = self.reward_function(current_state) # Calculate reward based on simulation state - now returns DataFrame
+
+                # Store data, reward, and orders for this step in simulation history
+                simulation_history_data.append({'data_window': X_current, 'reward_df': reward_df, 'orders': orders}) # Store reward_df - CHANGED
+
+                print(f'Portfolio value: {current_state.portfolio.latest_value()}, cash: {current_state.portfolio.cash}')
+                for i, ticker in tickers:
+                    print(f'Ticker: {ticker}')
+                    print(f' - closing: {current_state.stock_values[ticker]}')
+                    print(f' - holding: {current_state.portfolio.get_holding_quantity(ticker)}')
+                    print(f' - outputs: {orders_output[i * 2]}, {orders_output[i * 2 + 1]}')
+                    print(f' - orders: {list(filter(lambda o: o['ticker'] == ticker, orders))}')
+                    print(f' - buy reward: {reward_df[f'{ticker}_buy']}')
+                    print(f' - sell reward: {reward_df[f'{ticker}_sell']}')
+                    
+                global_index += 1 # Increment global index for next step
+
                 # 3. Simulation Step (execute orders and get next data window)
                 current_state = simulation.step(window_size, orders=orders) # Pass orders to step()
-
-                if current_state is not None:
-                    step_count += 1
-                    # 4. Reward Calculation
-                    reward_df = self.reward_function(current_state) # Calculate reward based on simulation state - now returns DataFrame
-
-                    # Store data, reward, and orders for this step in simulation history
-                    simulation_history_data.append({'data_window': X_current, 'reward_df': reward_df, 'orders': orders}) # Store reward_df - CHANGED
-
-                    print(f" - Simulation {sim_index+1}, Step {step_count}, Date: {simulation.current_date.date()}, Reward DataFrame:\n{str(reward_df)}, Portfolio Value: ${simulation.portfolio.value(simulation.valuations[simulation.current_date]):.2f}") # Print DataFrame reward
-
-                    global_index += 1 # Increment global index for next step
-
-                else:
-                    print(f"  Simulation {sim_index+1} ended after {step_count} steps.")
-                    break # End of simulation
+                step_count += 1
 
 
             # --- Epoch-based Model Update with Output-Specific Targets ---

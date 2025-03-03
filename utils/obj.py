@@ -15,6 +15,13 @@ def print_public_interface(cls):
     public_attributes = []
 
     for name, member in inspect.getmembers(cls):
+        if name == '__init__':
+            print("\nConstructor:")
+            signature = inspect.signature(member)
+            docstring = inspect.getdoc(member) or "No docstring available."
+            print(f"  - {cls.__name__}{signature}")
+            print(f"    Docstring: {docstring.replace('\n', '\n      ')}\n")
+
         if name.startswith('_'):
             continue  # Skip members starting with underscore (considered non-public)
 
@@ -30,7 +37,7 @@ def print_public_interface(cls):
             signature = inspect.signature(method)
             docstring = inspect.getdoc(method) or "No docstring available."
             print(f"  - {method_name}{signature}")
-            #print(f"    Docstring: {docstring.replace('\n', '\n      ')}\n")
+            print(f"    Docstring: {docstring.replace('\n', '\n      ')}\n")
 
     if public_attributes:
         print("\nPublic Attributes:")
@@ -38,10 +45,10 @@ def print_public_interface(cls):
             attribute = getattr(cls, attr_name)
             docstring = inspect.getdoc(attribute) or "No docstring available." # Try to get docstring for attributes too, if possible.
             print(f"  - {attr_name}")
-            #if docstring:
-                #print(f"    Docstring: {docstring}\n")
-            #else:
-                #print()
+            if docstring:
+                print(f"    Docstring: {docstring}\n")
+            else:
+                print()
 
     print("-" * 40)
     print("\n\n")
