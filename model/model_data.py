@@ -119,8 +119,8 @@ class ModelData:
             #RollingHiLo(20).extend(df)
             #RollingHiLo(50).extend(df)
             DailyPercentChange(2).extend(df)
-            PercentPriceChangeProbability(1, 1, 0.0, 1.0).extend(df)
-            PercentPriceChangeProbability(1, 1, 1.0, 2.0).extend(df)
+            PercentPriceChangeProbability(1, 1, 0.0, 0.01).extend(df)
+            PercentPriceChangeProbability(1, 1, 0.01, 0.02).extend(df)
         except ValueError as e: # Catch potential errors from indicator calculations
             print(f"Error during performance indicator calculation: {e}")
             return None

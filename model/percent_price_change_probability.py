@@ -41,19 +41,6 @@ class PercentPriceChangeProbability:
         self.min_percent_change = min_percent_change
         self.max_percent_change = max_percent_change
 
-        self.__window_size = self.end_days_future + 1
-        self.__sample_count = 1 + self.end_days_future - self.start_days_future
-
-        # --- Generate Column Name ---
-        col_name_parts = ["PPCProb"] # Percent Price Change Probability
-        col_name_parts.append(f"F{self.start_days_future}-{self.end_days_future}D") # Future days range
-        if self.min_percent_change is not None:
-            col_name_parts.append(f"Min{int(self.min_percent_change)}")
-        if self.max_percent_change is not None:
-            col_name_parts.append(f"Max{int(self.max_percent_change)}")
-
-        self.__probability_column_name = "_".join(col_name_parts)
-
         if min_percent_change is None and max_percent_change is None:
             raise ValueError("At least one of min_percent_change or max_percent_change must be specified.")
 
@@ -61,19 +48,6 @@ class PercentPriceChangeProbability:
             if min_percent_change >= max_percent_change:
                 raise ValueError("min_percent_change must be less than max_percent_change.")
 
-    def __check_percent_change(self, series):
-        div = series.iloc[0]
-        
-        curr = 0
-
-        for i in range(self.start_days_future, self.end_days_future + 1):
-            percent_change = 100 * series.iloc[i] / div - 100
-            less_than_max = self.max_percent_change is None or percent_change <= self.max_percent_change
-            greater_than_min = self.min_percent_change is None or percent_change >= self.min_percent_change
-            if less_than_max and greater_than_min:
-                curr += 1 / self.__sample_count
-
-        return curr
 
     def extend(self, df):
         """
@@ -100,7 +74,42 @@ class PercentPriceChangeProbability:
             print(f"❌ Missing required column or index")
             raise ValueError("Invalid input DataFrame structure.")
 
-        # --- Extend DataFrame ---
-        df[self.__probability_column_name] = df['Open'].rolling(window=self.__window_size).agg(self.__check_percent_change).shift(1 - self.__window_size) # Add Percent Price Change Probability column
+        current_open_prices = df['Open'] # Series of current open prices
+
+        future_percent_changes = []
+        future_dates_range = range(self.start_days_future, self.end_days_future + 1)
+
+        for days_future in future_dates_range:
+            future_open_prices_shifted = current_open_prices.shift(-days_future) # Shift future open prices
+            percent_change = (future_open_prices_shifted - current_open_prices) / current_open_prices
+            future_percent_changes.append(percent_change)
+
+        # Stack future percent changes into a DataFrame for vectorized condition checking
+        future_percent_changes_df = pd.concat(future_percent_changes, axis=1)
+        future_percent_changes_df = future_percent_changes_df.reindex(df.index) # Ensure correct index
+
+        condition_matrix = pd.DataFrame(index=df.index) # Matrix to store boolean conditions
+        if self.min_percent_change is not None and self.max_percent_change is not None:
+            condition_matrix = (future_percent_changes_df > self.min_percent_change) & (future_percent_changes_df <= self.max_percent_change)
+        elif self.min_percent_change is not None:
+            condition_matrix = (future_percent_changes_df >= self.min_percent_change)
+        elif self.max_percent_change is not None:
+            condition_matrix = (future_percent_changes_df <= self.max_percent_change)
+
+        # Calculate probability - vectorized sum over the rows (True counts as 1, False as 0)
+        probability_values = condition_matrix.sum(axis=1) / len(future_dates_range)
+        probability_values = probability_values.fillna(0) # Fill NaN values (from potential division by zero or no future dates)
+
+        # --- Generate Column Name ---
+        col_name_parts = ["PPCProb"] # Percent Price Change Probability
+        col_name_parts.append(f"F{self.start_days_future}-{self.end_days_future}D") # Future days range
+        if self.min_percent_change is not None:
+            col_name_parts.append(f"Min{int(self.min_percent_change*100)}")
+        if self.max_percent_change is not None:
+            col_name_parts.append(f"Max{int(self.max_percent_change*100)}")
+
+        probability_column_name = "_".join(col_name_parts)
+
+        df[probability_column_name] = probability_values.values # Assign numpy array to avoid index issues
 
         return df
