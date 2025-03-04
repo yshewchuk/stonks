@@ -3,13 +3,13 @@ import os
 import numpy as np
 import pandas as pd
 
-from model.moving_average import MovingAverage 
-from model.portfolio import Portfolio 
-from model.rolling_hi_lo import RollingHiLo 
-from model.max_percent_change_per_day import DailyPercentChange 
-from model.simulation import Simulation 
-from model.ticker_history import TickerHistory 
-from model.percent_price_change_probability import PercentPriceChangeProbability
+from model.moving_average import MovingAverage
+from model.portfolio import Portfolio
+from model.rolling_hi_lo import RollingHiLo
+from model.max_percent_change_per_day import DailyPercentChange
+from model.simulation import Simulation
+from model.ticker_history import TickerHistory
+from model.percent_price_change_probability import PercentPriceChangeProbability # Import the new class
 
 RAW_DATA_USED_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']  # Columns used from raw dataset
 
@@ -18,7 +18,7 @@ class ModelData:
     Represents processed stock market data ready for model training and simulation.
 
     This class handles loading historical stock data for multiple tickers,
-    calculating technical indicators (Moving Averages, Rolling Hi-Lo),
+    calculating technical indicators (Moving Averages, Rolling Hi-Lo, Percent Price Change Probabilities),
     aggregating the data into a single DataFrame, and creating independent
     simulation datasets with associated Portfolio objects for backtesting or training.
     """
@@ -40,32 +40,33 @@ class ModelData:
         if not os.path.isdir(raw_data_dir):
             raise ValueError(f"Raw data directory '{raw_data_dir}' is not a valid directory.")
 
-        self.tickers = list(tickers) # Store tickers internally as a list
+        self.tickers = list(tickers)  # Store tickers internally as a list
         self.raw_data_dir = raw_data_dir
         self.stock_data = {}  # Dictionary to hold processed DataFrame for each ticker
-        self.data = None # Combined DataFrame holding data for all tickers
-        self.date_min = None # Earliest date in the combined dataset
-        self.date_max = None # Latest date in the combined dataset
+        self.data = None  # Combined DataFrame holding data for all tickers
+        self.date_min = None  # Earliest date in the combined dataset
+        self.date_max = None  # Latest date in the combined dataset
 
-        self._load_and_process_data() # Call internal method to load and process data during initialization
+        self._load_and_process_data()  # Call internal method to load and process data during initialization
 
     def _load_and_process_data(self):
         """
         Internal method to load raw data for each ticker and process it.
 
-        Loads data using TickerHistory, calculates performance indicators,
+        Loads data using TickerHistory, calculates performance indicators
+        (including Percent Price Change Probabilities),
         and stores the processed DataFrame in self.stock_data.
         Finally, it concatenates all ticker data into self.data and sets date range.
         """
-        processed_stock_data = {} # Temporary dict to hold processed dataframes
+        processed_stock_data = {}  # Temporary dict to hold processed dataframes
 
         for ticker in self.tickers:
             print(f'Reading data file for ticker: {ticker}')
             file_path = os.path.join(self.raw_data_dir, f'{ticker}.csv')
-            history = TickerHistory(ticker) # Assuming TickerHistory class exists and is properly initialized
+            history = TickerHistory(ticker)  # Assuming TickerHistory class exists and is properly initialized
             if not history.load_from_csv(file_path):
                 print(f"Warning: Could not load data from CSV for ticker {ticker} at {file_path}. Skipping ticker.")
-                continue # Skip to the next ticker if loading fails
+                continue  # Skip to the next ticker if loading fails
 
             processed_df = self._standardize_and_calculate_performance(history.dataframe())
             if processed_df is not None:
@@ -75,11 +76,11 @@ class ModelData:
 
         if not processed_stock_data:
             print("Error: No valid stock data loaded for any ticker. ModelData initialization failed.")
-            self.data = None # Indicate data loading failure
+            self.data = None  # Indicate data loading failure
             return
 
-        self.stock_data = processed_stock_data # Assign processed data to instance variable
-        self.data = pd.concat(self.stock_data, axis='columns', join='inner', keys=self.stock_data.keys(), names=['Ticker']).dropna() # Use keys and names for clarity
+        self.stock_data = processed_stock_data  # Assign processed data to instance variable
+        self.data = pd.concat(self.stock_data, axis='columns', join='inner', keys=self.stock_data.keys(), names=['Ticker']).dropna()  # Use keys and names for clarity
 
         self.date_min = self.data.index.min()
         self.date_max = self.data.index.max()
@@ -88,10 +89,11 @@ class ModelData:
 
     def _standardize_and_calculate_performance(self, df):
         """
-        Internal method to standardize data and calculate performance indicators for a single ticker DataFrame.
+        Internal method to standardize data and calculate performance indicators
+        (including Percent Price Change Probabilities) for a single ticker DataFrame.
 
-        Currently, it drops unnecessary columns and extends the DataFrame with
-        Moving Averages and Rolling Hi-Lo range indicators.
+        Extends the DataFrame with Moving Averages, Rolling Hi-Lo range indicators,
+        and Percent Price Change Probability columns.
 
         Args:
             df (pd.DataFrame): DataFrame for a single ticker, loaded from CSV (TickerHistory).
@@ -101,27 +103,55 @@ class ModelData:
         """
         if not isinstance(df, pd.DataFrame) or df.empty:
             print("Warning: Input DataFrame for performance calculation is invalid or empty.")
-            return None # Handle invalid DataFrame gracefully
+            return None  # Handle invalid DataFrame gracefully
 
         # 1. Select Used Columns
         try:
-            df = df[RAW_DATA_USED_COLUMNS] # Select only the columns we need, error if not present
+            df = df[RAW_DATA_USED_COLUMNS]  # Select only the columns we need, error if not present
         except KeyError as e:
             print(f"Error: Raw data is missing required columns: {e}. Required columns: {RAW_DATA_USED_COLUMNS}")
             return None
 
-        # 2. Calculate Performance Indicators - Extend DataFrame with Moving Averages and Rolling Hi-Lo
+        # 2. Calculate Performance Indicators - Extend DataFrame with Moving Averages, Rolling Hi-Lo, and Percent Price Change Probabilities
         try:
-            #MovingAverage(5).extend(df)
-            #MovingAverage(20).extend(df)
-            #MovingAverage(50).extend(df)
-            #RollingHiLo(5).extend(df)
-            #RollingHiLo(20).extend(df)
-            #RollingHiLo(50).extend(df)
-            DailyPercentChange(2).extend(df)
-            PercentPriceChangeProbability(1, 1, 0.0, 0.01).extend(df)
-            PercentPriceChangeProbability(1, 1, 0.01, 0.02).extend(df)
-        except ValueError as e: # Catch potential errors from indicator calculations
+            MovingAverage(5).extend(df)
+            MovingAverage(20).extend(df)
+            MovingAverage(50).extend(df)
+            RollingHiLo(5).extend(df)
+            RollingHiLo(20).extend(df)
+            RollingHiLo(50).extend(df)
+            DailyPercentChange(30).extend(df)
+
+            # --- Calculate Percent Price Change Probabilities ---
+            probability_calculators = [
+                PercentPriceChangeProbability(1, 3, max_percent_change=-0.07),
+                PercentPriceChangeProbability(1, 3, min_percent_change=-0.07, max_percent_change=-0.03),
+                PercentPriceChangeProbability(1, 3, min_percent_change=-0.03, max_percent_change=-0.01),
+                PercentPriceChangeProbability(1, 3, min_percent_change=-0.01, max_percent_change=0.01),
+                PercentPriceChangeProbability(1, 3, min_percent_change=0.01, max_percent_change=0.03),
+                PercentPriceChangeProbability(1, 3, min_percent_change=0.03, max_percent_change=0.07),
+                PercentPriceChangeProbability(1, 3, min_percent_change=0.07),
+
+                PercentPriceChangeProbability(4, 10, max_percent_change=-0.10),
+                PercentPriceChangeProbability(4, 10, min_percent_change=-0.10, max_percent_change=-0.04),
+                PercentPriceChangeProbability(4, 10, min_percent_change=-0.04, max_percent_change=-0.02),
+                PercentPriceChangeProbability(4, 10, min_percent_change=-0.02, max_percent_change=0.02),
+                PercentPriceChangeProbability(4, 10, min_percent_change=0.02, max_percent_change=0.04),
+                PercentPriceChangeProbability(4, 10, min_percent_change=0.04, max_percent_change=0.10),
+                PercentPriceChangeProbability(4, 10, min_percent_change=0.10),
+
+                PercentPriceChangeProbability(11, 30, max_percent_change=-0.12),
+                PercentPriceChangeProbability(11, 30, min_percent_change=-0.12, max_percent_change=-0.05),
+                PercentPriceChangeProbability(11, 30, min_percent_change=-0.05, max_percent_change=-0.03),
+                PercentPriceChangeProbability(11, 30, min_percent_change=-0.03, max_percent_change=0.03),
+                PercentPriceChangeProbability(11, 30, min_percent_change=0.03, max_percent_change=0.05),
+                PercentPriceChangeProbability(11, 30, min_percent_change=0.05, max_percent_change=0.12),
+                PercentPriceChangeProbability(11, 30, min_percent_change=0.12)
+            ]
+            for calculator in probability_calculators:
+                calculator.extend(df) # Extend DataFrame with each probability column
+
+        except ValueError as e:  # Catch potential errors from indicator calculations
             print(f"Error during performance indicator calculation: {e}")
             return None
 
@@ -139,7 +169,7 @@ class ModelData:
             print("Warning: No data available to save. Data might not have been loaded or processed successfully.")
             return False
 
-        os.makedirs(os.path.dirname(file_path), exist_ok=True) # Ensure directory exists
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)  # Ensure directory exists
         self.data.to_csv(file_path)
         print(f"✅ Model data saved to CSV file: {file_path}")
         return True
@@ -166,19 +196,19 @@ class ModelData:
             raise ValueError("portfolio_value must be a non-negative number.")
         if self.data is None or self.data.empty:
             print("Warning: No data available to create simulations. Model data is empty or not loaded.")
-            return [] # Return empty list if no data
+            return []  # Return empty list if no data
 
         simulations = []
-        valid_simulation_dates = 0 # Counter for successfully created simulations
+        valid_simulation_dates = 0  # Counter for successfully created simulations
 
-        unique_dates = sorted(self.data.index.unique()) # Get sorted unique dates from index for iteration
+        unique_dates = sorted(self.data.index.unique())  # Get sorted unique dates from index for iteration
 
         for date in unique_dates:
-            end_date = date + pd.Timedelta(days=simulation_window_days) # Use pandas Timedelta for date calculations
+            end_date = date + pd.Timedelta(days=simulation_window_days)  # Use pandas Timedelta for date calculations
             if end_date <= self.date_max:
-                portfolio = Portfolio(portfolio_value, self.tickers) # Create new Portfolio for each simulation
-                simulation_data = self.data.loc[date : end_date] # Extract simulation data window
-                yield Simulation(simulation_data, portfolio) # Assuming Simulation class exists and takes data and portfolio
+                portfolio = Portfolio(portfolio_value, self.tickers)  # Create new Portfolio for each simulation
+                simulation_data = self.data.loc[date: end_date]  # Extract simulation data window
+                yield Simulation(simulation_data, portfolio)  # Assuming Simulation class exists and takes data and portfolio
                 valid_simulation_dates += 1
 
         if not simulations:
@@ -187,32 +217,36 @@ class ModelData:
             print(f"✅ Created {valid_simulation_dates} simulations, each with a {simulation_window_days}-day window.")
 
 
+
 # Example Usage (for testing and demonstration - assuming data files exist in 'raw_data' directory)
 if __name__ == '__main__':
     # Example tickers and raw data directory (you might need to adjust raw_data_dir to point to your actual data)
-    example_tickers = ['AAPL', 'GOOG'] # Make sure you have AAPL.csv and GOOG.csv in raw_data_dir
+    example_tickers = ['AAPL', 'GOOG']  # Make sure you have AAPL.csv and GOOG.csv in raw_data_dir
     example_raw_data_dir = 'raw_data'  # Replace with the actual path to your raw data directory
 
     try:
         # Create ModelData instance - this will load and process data
         model_data = ModelData(example_tickers, example_raw_data_dir)
 
-        if model_data.data is not None: # Check if data loading was successful
+        if model_data.data is not None:  # Check if data loading was successful
             print("\n--- Model Data Summary ---")
             print(f"Tickers in model data: {model_data.tickers}")
             print(f"Data date range: {model_data.date_min.date()} to {model_data.date_max.date()}")
             print(f"Shape of aggregated data: {model_data.data.shape}")
+            print("\n--- Sample of Data with Probability Columns ---")
+            sample_output = model_data.data.sample(5).sort_index() # Get a small sample sorted by date for better readability
+            print(sample_output.to_string()) # Print sample output
 
             # Save model data to CSV (optional)
-            output_csv_path = 'transformed_data/model_data.csv' # Example output path
+            output_csv_path = 'transformed_data/model_data.csv'  # Example output path
             if model_data.save_to_csv(output_csv_path):
                 print(f"Model data saved to: {output_csv_path}")
 
             # Create simulations
-            simulation_window = 30 # Example simulation window in days
-            initial_portfolio_value = 100000 # Example initial portfolio value
+            simulation_window = 30  # Example simulation window in days
+            initial_portfolio_value = 100000  # Example initial portfolio value
             simulations = model_data.create_simulations(simulation_window, initial_portfolio_value)
-            print(f"\nNumber of simulations created: {len(simulations)}")
+            print(f"\nNumber of simulations created: {sum(1 for _ in simulations)}") # Iterate through generator to count
 
         else:
             print("\n❌ ModelData could not be initialized. Check warnings and errors above.")
