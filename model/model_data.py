@@ -9,6 +9,7 @@ from model.rolling_hi_lo import RollingHiLo
 from model.max_percent_change_per_day import DailyPercentChange 
 from model.simulation import Simulation 
 from model.ticker_history import TickerHistory 
+from model.percent_price_change_probability import PercentPriceChangeProbability
 
 RAW_DATA_USED_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']  # Columns used from raw dataset
 
@@ -111,13 +112,15 @@ class ModelData:
 
         # 2. Calculate Performance Indicators - Extend DataFrame with Moving Averages and Rolling Hi-Lo
         try:
-            MovingAverage(5).extend(df)
-            MovingAverage(20).extend(df)
-            MovingAverage(50).extend(df)
-            RollingHiLo(5).extend(df)
-            RollingHiLo(20).extend(df)
-            RollingHiLo(50).extend(df)
-            DailyPercentChange(30).extend(df)
+            #MovingAverage(5).extend(df)
+            #MovingAverage(20).extend(df)
+            #MovingAverage(50).extend(df)
+            #RollingHiLo(5).extend(df)
+            #RollingHiLo(20).extend(df)
+            #RollingHiLo(50).extend(df)
+            DailyPercentChange(2).extend(df)
+            PercentPriceChangeProbability(1, 1, 0.0, 1.0).extend(df)
+            PercentPriceChangeProbability(1, 1, 1.0, 2.0).extend(df)
         except ValueError as e: # Catch potential errors from indicator calculations
             print(f"Error during performance indicator calculation: {e}")
             return None
