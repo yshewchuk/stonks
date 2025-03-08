@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 
+from model.date_features import DateFeatures
 from model.moving_average import MovingAverage
 from model.portfolio import Portfolio
 from model.rolling_hi_lo import RollingHiLo
@@ -17,6 +18,7 @@ RAW_DATA_USED_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']  # Columns us
 PRICE_COLUMN_TAGS = ['Open', 'High', 'Low', 'Close', 'MA', 'Hi', 'Lo'] # List of price column tags
 
 # --- NEW: Allowlist for historical_data features ---
+NON_STOCK_FEATURES = ['DayOfWeek', 'MonthOfYear']
 HISTORICAL_DATA_FEATURE_ALLOWLIST = [
     'Open', 'High', 'Low', 'Close', 'Volume',
     'MA5', 'MA20', 'MA50',
@@ -88,6 +90,7 @@ class DataManager:
 
         self.stock_data = processed_stock_data
         self.data = pd.concat(self.stock_data, axis='columns', join='inner', keys=self.stock_data.keys(), names=['Ticker']).dropna()
+        DateFeatures().extend(self.data)
 
         # --- ENSURE UNIQUE AND SORTED INDEX ---
         if not self.data.index.is_unique: # Check for index uniqueness
@@ -223,7 +226,7 @@ class DataManager:
         # --- **NEW: Filter columns for historical_data based on allowlist** ---
         historical_data_columns = []
         for col in unscaled_window_df.columns:
-            if col[1] in HISTORICAL_DATA_FEATURE_ALLOWLIST: # Check if column tag is in allowlist
+            if col[0] in NON_STOCK_FEATURES or col[1] in HISTORICAL_DATA_FEATURE_ALLOWLIST: # Check if column tag is in allowlist
                 historical_data_columns.append(col)
 
         # --- Volume Scaling (Apply volume scaling WITHIN this data window using the scaling_window dates) ---

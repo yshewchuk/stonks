@@ -36,13 +36,17 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
     data_manager.save_to_csv('model_data/stock.csv')
     windows = data_manager.create_price_prediction_windows()
 
-    agent = PricePredictionTrainingAgent(list(itertools.islice(windows, 2500)), 'AAPL') # Using LSTM model
-    agent.train_model(20) # Train for 2 epochs, window size 5
+    training_windows = list(itertools.islice(windows, 2530))
+    eval_windows = list(itertools.islice(windows, 60, 530))
 
-    agent.evaluate_model(list(itertools.islice(windows, 30, 230))).to_csv('simulations/predictions.csv')
+    feature_count = len(training_windows[0].historical_data.columns)
 
-    os.makedirs('saved_model')
-    agent.model.save('saved_model/model.keras')
+    agent = PricePredictionTrainingAgent('AAPL', feature_count) # Using LSTM model
+
+    agent.train_model(training_windows, eval_windows, 200) # Train for 2 epochs, window size 5
+
+    os.makedirs('saved_model', exist_ok=True)
+    agent.model.save('saved_model/model3.keras')
 
     return
 
@@ -58,11 +62,7 @@ if __name__ == '__main__':
 if __name__ == '__main__':
     print("\n🎉 Starting Stock Data Transformation and Preparation (Transform Script)...")
 
-    train_data, eval_data = load_and_transform_stock_data(RAW_DATA_DIR, TRANSFORMED_DATA_DIR, tickers=TICKERS, feature_columns=FEATURE_COLUMNS_STOCK_DATA, n_steps=N_STEPS) # Load and transform
-    if train_data and eval_data:
-        save_transformed_and_prepared_data(train_data, eval_data) # Call the new combined saving function
-    else:
-        print("❌ Transformation process failed. Prepared data not saved.")
+    load_and_transform_stock_data(RAW_DATA_DIR, TRANSFORMED_DATA_DIR, tickers=TICKERS, feature_columns=FEATURE_COLUMNS_STOCK_DATA, n_steps=N_STEPS) # Load and transform
 
     print("Transformed and prepared data saved to directories specified in config.py") # Update message
     print("✅ ETL - Transform and Prepare script completed successfully!") # Final success message

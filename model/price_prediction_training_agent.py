@@ -11,7 +11,7 @@ class PricePredictionTrainingAgent:
     for a single ticker.
     """
 
-    def __init__(self, train_data_list, eval_data_list, ticker, model=None, model_params=None, optimizer=None):
+    def __init__(self, ticker, feature_count, model=None, model_params=None, optimizer=None):
         """
         Initializes the PricePredictionTrainingAgent.
 
@@ -23,50 +23,41 @@ class PricePredictionTrainingAgent:
             model_params (dict, optional): Parameters for the model. If None, default parameters will be used.
             optimizer (tf.keras.optimizers.Optimizer, optional): Optimizer for training. If None, Adam optimizer is used.
         """
-        if not isinstance(train_data_list, list) or not all(isinstance(md, ModelData) for md in train_data_list):
-            raise ValueError("train_data_list must be a list of ModelData objects.")
-        if not isinstance(eval_data_list, list) or not all(isinstance(md, ModelData) for md in eval_data_list):
-            raise ValueError("eval_data_list must be a list of ModelData objects.")
         if not isinstance(ticker, str):
             raise ValueError("ticker must be a string.")
 
-        self.train_data_list = train_data_list # Separate training data
-        self.eval_data_list = eval_data_list   # Separate evaluation data
         self.ticker = ticker
         self.model_params = model_params if model_params is not None else self._get_default_model_params()
-        
+        self.model_params['n_features_total'] = feature_count
+
         print(f"PricePredictionTrainingAgent Model parameters being used: {self.model_params}")
         self.model = model if model is not None else self._create_default_model(self.model_params)
-        self.optimizer = optimizer if optimizer is not None else tf.keras.optimizers.Adam()
+        self.optimizer = optimizer if optimizer is not None else tf.keras.optimizers.Adam(learning_rate=self.model_params['learning_rate'])
 
-        # Validate that ModelData objects contain data for the specified ticker
-        for model_data_train in self.train_data_list:
-            if self.ticker not in model_data_train.tickers:
-                raise ValueError(f"Training ModelData object does not contain data for ticker: {self.ticker}. Available tickers: {model_data_train.tickers}")
-        for model_data_eval in self.eval_data_list:
-            if self.ticker not in model_data_eval.tickers:
-                raise ValueError(f"Evaluation ModelData object does not contain data for ticker: {self.ticker}. Available tickers: {model_data_eval.tickers}")
-
+        # --- COMPILE THE MODEL HERE ---
+        self.model.compile(
+            optimizer=self.optimizer, # Use the configured optimizer
+            loss='mse',             # Mean Squared Error loss function
+            metrics=['mse']         # Track Mean Squared Error during training and evaluation
+        )
+        print("Price Prediction Model Compiled.")
 
     def _get_default_model_params(self):
         """Returns default LSTM model parameters optimized for price prediction task."""
-        sample_model_data = self.train_data_list[0] # Use the first TRAINING ModelData to determine parameters
-
         # Assuming ModelData.historical_data contains the scaled data
-        n_features_total = sample_model_data.historical_data.xs(self.ticker, level='Ticker', axis=1).shape[1]
         n_output_probabilities = 21 # Number of price change probabilities
 
         print(f"Debugging _get_default_model_params for Price Prediction:")
         print(f"  Ticker: {self.ticker}")
-        print(f"  Total features for ticker: {n_features_total}")
         print(f"  Number of output probabilities: {n_output_probabilities}")
 
 
         return {
             'n_steps': 60, # Example window size, adjust as needed
-            'n_features_total': n_features_total,
-            'n_units': 64,
-            'n_output_probabilities': n_output_probabilities # Output size is now number of probabilities
+            'n_units': 128,
+            'n_output_probabilities': n_output_probabilities, # Output size is now number of probabilities
+            'learning_rate': 0.001,
+            'dropout_rate': 0.3
         }
 
     def _create_default_model(self, model_params):
@@ -74,7 +65,13 @@ class PricePredictionTrainingAgent:
         return tf.keras.Sequential([
             tf.keras.layers.Input(shape=(model_params['n_steps'], model_params['n_features_total'])),
             tf.keras.layers.LSTM(units=model_params['n_units'], return_sequences=True),
+            tf.keras.layers.Dropout(model_params['dropout_rate']),
+            tf.keras.layers.LSTM(units=model_params['n_units'], return_sequences=True),
+            tf.keras.layers.Dropout(model_params['dropout_rate']),
+            tf.keras.layers.LSTM(units=model_params['n_units'], return_sequences=True),
+            tf.keras.layers.Dropout(model_params['dropout_rate']),
             tf.keras.layers.LSTM(units=model_params['n_units']),
+            tf.keras.layers.Dropout(model_params['dropout_rate']),
             tf.keras.layers.Dense(units=model_params['n_units']//2, activation='relu'),
             tf.keras.layers.Dense(units=model_params['n_output_probabilities'], activation='sigmoid') # Sigmoid for probability outputs
         ])
@@ -88,7 +85,7 @@ class PricePredictionTrainingAgent:
 
         Returns:
             np.array: Average price change probability vector (shape: (1, 21)).
-                       Returns None if no valid PPC data is found.
+                        Returns None if no valid PPC data is found.
         """
         all_ppc_data = []
         for model_data in model_data_list:
@@ -104,178 +101,183 @@ class PricePredictionTrainingAgent:
         average_ppc = np.mean(all_ppc_data_concatenated, axis=0, keepdims=True) # Average across days, shape: (1, 21)
         return average_ppc
 
-
-    def train_model(self, epochs=10):
+    def _create_dataset(self, model_data_list, batch_size, shuffle=False):
         """
-        Trains the price prediction model using the provided ModelData objects.
+        Creates a tf.data.Dataset from a list of ModelData objects.
+
+        Args:
+            model_data_list (list): List of ModelData objects.
+            batch_size (int): Batch size for training.
+            shuffle (bool): Whether to shuffle the dataset (for training).
+
+        Returns:
+            tf.data.Dataset: TensorFlow Dataset object.
+        """
+        all_X = []
+        all_y = []
+
+        for model_data in model_data_list:
+            if model_data.historical_data is None or model_data.historical_data.empty:
+                continue
+
+            X_train = model_data.historical_data.values
+            y_target = model_data.complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').values
+
+            if X_train.shape[0] < self.model_params['n_steps']:
+                continue
+
+            X_train_windowed = []
+            y_target_windowed = []
+            for i in range(self.model_params['n_steps'], X_train.shape[0] + 1): # Create sliding windows
+                X_train_windowed.append(X_train[i - self.model_params['n_steps']:i])
+                # --- MODIFICATION: Take ONLY the LAST value of y_target window ---
+                y_target_windowed.append(y_target[i-1, :]) # Use i-1 to get the target corresponding to the window ending at i
+
+            all_X.extend(X_train_windowed)
+            all_y.extend(y_target_windowed)
+
+        if not all_X: # Return empty dataset if no valid data
+            return tf.data.Dataset.from_tensor_slices(([], []))
+
+        X_dataset = np.array(all_X) # Convert lists to NumPy arrays for dataset creation
+        y_dataset = np.array(all_y) # y_dataset now shape (num_samples, n_output_probabilities)
+
+        dataset = tf.data.Dataset.from_tensor_slices((X_dataset, y_dataset)) # Create dataset from slices
+        dataset = dataset.batch(batch_size) # Batch the dataset
+        if shuffle:
+            dataset = dataset.shuffle(buffer_size=len(all_X)) # Shuffle if training
+        dataset = dataset.prefetch(tf.data.AUTOTUNE) # Optimize data loading
+
+        return dataset
+
+
+    def train_model(self, train_data_list, eval_data_list, epochs=10, batch_size=32):
+        """
+        Trains the price prediction model using model.fit().
 
         Args:
             epochs (int): Number of training epochs.
+            batch_size (int): Batch size for training.
         """
-        print(f"Starting price prediction model training for ticker {self.ticker}...")
+        if not isinstance(train_data_list, list) or not all(isinstance(md, ModelData) for md in train_data_list):
+            raise ValueError("train_data_list must be a list of ModelData objects.")
+        if not isinstance(eval_data_list, list) or not all(isinstance(md, ModelData) for md in eval_data_list):
+            raise ValueError("eval_data_list must be a list of ModelData objects.")
+        
+        print(f"Starting price prediction model training for ticker {self.ticker} using model.fit() with batch size {batch_size}...")
 
-        # --- Calculate Historical Average Baseline Prediction ---
-        baseline_prediction = self._calculate_historical_average_baseline(self.train_data_list) # Calculate baseline using TRAINING data
+        # --- Calculate Historical Average Baseline Prediction (remains - for comparison outside of fit) ---
+        baseline_prediction = self._calculate_historical_average_baseline(train_data_list)
         if baseline_prediction is None:
-            print("Warning: Could not calculate historical average baseline. Baseline comparison will be skipped.")
-            baseline_prediction = np.zeros((1, self.model_params['n_output_probabilities'])) # Fallback to zero prediction if no baseline
+            baseline_prediction = np.zeros((1, self.model_params['n_output_probabilities']))
 
+        # --- Create Training and Evaluation Datasets (remains the same) ---
+        train_dataset = self._create_dataset(train_data_list, batch_size=batch_size, shuffle=True)
+        eval_dataset = self._create_dataset(eval_data_list, batch_size=batch_size, shuffle=False)
 
-        for epoch in range(epochs):
-            print(f"\n--- Epoch {epoch+1}/{epochs} ---")
-            epoch_loss = 0.0
-            epoch_eval_loss = 0.0 # NEW: Track evaluation loss
-            epoch_baseline_train_loss = 0.0 # NEW: Track baseline training loss
-            epoch_baseline_eval_loss = 0.0 # NEW: Track baseline evaluation loss
-            num_batches = 0
-            num_eval_batches = 0 # NEW: Count evaluation batches
+        print("\n--- Starting model.fit() training ---")
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=12, min_lr=0.0001)
+        stop_training = tf.keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=80, verbose=1, restore_best_weights=True, start_from_epoch=40)
+        history = self.model.fit( # --- Use model.fit() ---
+            train_dataset,          # Training data dataset
+            epochs=epochs,              # Number of epochs
+            batch_size=None,            # Batch size is handled by the dataset
+            validation_data=eval_dataset, # Evaluation dataset for validation
+            verbose=1,                 # Set verbosity (0=silent, 1=progress bar, 2=one line per epoch)
+            callbacks=[reduce_lr, stop_training]
+        )
 
-            # --- Training Loop ---
-            for model_data in self.train_data_list: # Iterate through TRAINING data
-                if model_data.historical_data is None or model_data.historical_data.empty:
-                    print("Warning: No historical data in ModelData object. Skipping.")
-                    continue
+        print("\n--- model.fit() training Complete ---")
 
-                # Extract input data and target probabilities for the specified ticker
-                X_train = model_data.historical_data.xs(self.ticker, level='Ticker', axis=1).values # Shape: (window_size, n_features)
-                # Assuming ModelData.complete_data contains the target price change probabilities
-                y_target = model_data.complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').values # Shape: (window_size, 21) - filter columns by 'PPC' tag
+        # --- Evaluation Loop (Baseline Comparison - remains, but could be simplified further if desired) ---
+        epoch_baseline_eval_loss = 0.0
+        num_eval_batches = 0
+        for eval_batch_X, eval_batch_y in eval_dataset: # Keep baseline evaluation for comparison
+            if tf.reduce_sum(tf.cast(tf.math.is_nan(eval_batch_X), tf.float32)) > 0 or tf.reduce_sum(tf.cast(tf.math.is_nan(eval_batch_y), tf.float32)) > 0:
+                continue
+            if baseline_prediction is not None:
+                baseline_eval_loss = tf.keras.losses.MeanSquaredError()(eval_batch_y, baseline_prediction) # Compare directly with batched y_eval_batch
+                epoch_baseline_eval_loss += baseline_eval_loss.numpy()
+            num_eval_batches += 1
 
-                if X_train.shape[0] < self.model_params['n_steps']:
-                    print(f"Warning: Data window size too small ({X_train.shape[0]} days) for model input ({self.model_params['n_steps']} steps). Skipping this window.")
-                    continue # Skip windows smaller than n_steps
-
-                # Reshape for LSTM input (batch_size, timesteps, features) - batch_size=1 for single window
-                X_train_reshaped = np.array([X_train[-self.model_params['n_steps']:]]) # Take last n_steps days
-                y_target_reshaped = np.array([y_target[-self.model_params['n_steps']:]]) # Take corresponding target probabilities
-
-                if np.isnan(X_train_reshaped).any() or np.isnan(y_target_reshaped).any():
-                    print("Warning: NaN values found in training data or targets. Skipping this batch.")
-                    continue
-
-
-                with tf.GradientTape() as tape:
-                    y_pred = self.model(X_train_reshaped) # Get model predictions - shape (1, n_steps, 21)
-                    # Take only the LAST prediction in the sequence for each probability, shape (1, 21)
-                    y_pred_last_step = y_pred[:, :]  # Shape: (1, 21)
-
-                    # Calculate loss using MSE - comparing last prediction with the LAST target probabilities
-                    loss = tf.keras.losses.MeanSquaredError()(y_target_reshaped[:, -1, :], y_pred_last_step) # Compare last step predictions with last step target
-
-                gradients = tape.gradient(loss, self.model.trainable_variables)
-                self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-
-                epoch_loss += loss.numpy()
-
-                # --- NEW: Calculate Baseline Training Loss ---
-                if baseline_prediction is not None:
-                    baseline_train_loss = tf.keras.losses.MeanSquaredError()(y_target_reshaped[:, -1, :], baseline_prediction) # Baseline loss on training batch
-                    epoch_baseline_train_loss += baseline_train_loss.numpy()
-
-
-                num_batches += 1
-                print(f"  - Trained on window starting {model_data.start_date.date()}, Loss: {loss.numpy():.4f}")
-
-
-            # --- Evaluation Loop (AFTER training epoch) ---
-            for eval_model_data in self.eval_data_list: # Iterate through EVALUATION data
-                eval_historical_data = eval_model_data.get_historical_data()
-                eval_X_train = eval_historical_data.xs(self.ticker, level='Ticker', axis=1).values
-                eval_y_target = eval_model_data.complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').values
-
-                if eval_historical_data.empty:
-                    print("Warning: No historical data in evaluation ModelData object. Skipping evaluation for this window.")
-                    continue
-
-                if eval_X_train.shape[0] < self.model_params['n_steps']:
-                    continue # Skip small windows
-
-                eval_X_train_reshaped = np.array([eval_X_train[-self.model_params['n_steps']:]])
-                eval_y_target_reshaped = np.array([eval_y_target[-self.model_params['n_steps']:]])
-
-                y_eval_pred = self.model(eval_X_train_reshaped) # Model prediction on evaluation data
-                y_eval_pred_last_step = y_eval_pred[:, :]
-
-                eval_loss = tf.keras.losses.MeanSquaredError()(eval_y_target_reshaped[:, -1, :], y_eval_pred_last_step) # Evaluation loss
-
-                epoch_eval_loss += eval_loss.numpy()
-
-                # --- NEW: Calculate Baseline Evaluation Loss ---
-                if baseline_prediction is not None:
-                    baseline_eval_loss = tf.keras.losses.MeanSquaredError()(eval_y_target_reshaped[:, -1, :], baseline_prediction) # Baseline loss on evaluation batch
-                    epoch_baseline_eval_loss += baseline_eval_loss.numpy()
-
-                num_eval_batches += 1
-                print(f"  - Evaluated on window starting {eval_model_data.start_date.date()}, Loss: {eval_loss.numpy():.4f}")
-
-
-            # --- Epoch Summary Output ---
-            if num_batches > 0:
-                avg_loss = epoch_loss / num_batches
-                avg_baseline_train_loss = epoch_baseline_train_loss / num_batches if num_batches > 0 and baseline_prediction is not None else 0 # Average baseline training loss
-                print(f"Epoch {epoch+1} Training completed, Avg. Training Loss: {avg_loss:.4f}, Baseline Train Loss: {avg_baseline_train_loss:.4f}")
-            else:
-                print(f"Epoch {epoch+1} Training completed, No training batches in this epoch.")
-
-            if num_eval_batches > 0: # NEW: Evaluation summary
-                avg_eval_loss = epoch_eval_loss / num_eval_batches
-                avg_baseline_eval_loss = epoch_baseline_eval_loss / num_eval_batches if num_eval_batches > 0 and baseline_prediction is not None else 0 # Average baseline eval loss
-
-                print(f"Epoch {epoch+1} Evaluation completed, Avg. Evaluation Loss: {avg_eval_loss:.4f}, Baseline Eval Loss: {avg_baseline_eval_loss:.4f}")
-            else:
-                print(f"Epoch {epoch+1} Evaluation completed, No evaluation batches in this epoch.")
+        if num_eval_batches > 0:
+            avg_baseline_eval_loss = epoch_baseline_eval_loss / num_eval_batches if num_eval_batches > 0 and baseline_prediction is not None else 0
+            print(f"\n--- Baseline Evaluation on Evaluation Set ---")
+            print(f"Baseline Evaluation completed, Avg. Baseline Eval Loss: {avg_baseline_eval_loss:.4f}")
 
 
         print(f"\n--- Price Prediction Training for ticker {self.ticker} Complete ---")
+        return history # Return the training history object from model.fit()
 
 
-    def evaluate_model(self, model_data_entries):
+    def evaluate_model(self, eval_data_list, batch_size=32):
         """
-        Tests the model (without altering weights) with data that it hasn't seen before.
+        Evaluates the model using model.predict() on unseen data.
+
+        Args:
+            model_data_entries (list): List of ModelData objects for evaluation.
+            batch_size (int): Batch size for evaluation.
+
+        Returns:
+            pd.DataFrame: DataFrame of predictions.
         """
-        print(f"Starting price prediction model evaluation for ticker {self.ticker}...")
+        if not isinstance(eval_data_list, list) or not all(isinstance(md, ModelData) for md in eval_data_list):
+            raise ValueError("eval_data_list must be a list of ModelData objects.")
+        
+        print(f"Starting price prediction model evaluation for ticker {self.ticker} using model.predict()...")
+
+        # --- Create Evaluation Dataset ---
+        eval_dataset = self._create_dataset(eval_data_list, batch_size=batch_size, shuffle=False)
+
+        print("\n--- Starting model.predict() evaluation ---")
+
+        predictions = self.model.predict(eval_dataset, verbose=1) # --- Use model.predict() ---
+        # predictions will be a NumPy array of shape (total_samples, n_output_probabilities)
+
+
+        print("\n--- model.predict() evaluation Complete ---")
 
         all_predictions = []
         average_loss = 0
-        y_target_columns = model_data_entries[0].complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').columns.tolist()
+        y_target_columns = eval_data_list[0].complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').columns.tolist()
 
-        for model_data in model_data_entries:
+        batch_index = 0 # Track index within predictions array
+        for model_data in eval_data_list:
             if model_data.historical_data is None or model_data.historical_data.empty:
-                print("Warning: No historical data in ModelData object. Skipping.")
                 continue
 
-            # Extract input data and target probabilities for the specified ticker
-            X_train = model_data.historical_data.xs(self.ticker, level='Ticker', axis=1).values # Shape: (window_size, n_features)
-            # Assuming ModelData.complete_data contains the target price change probabilities
+            X_eval = model_data.historical_data.xs(self.ticker, level='Ticker', axis=1).values
+            y_target = model_data.complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').values
 
-            y_target = model_data.complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').values # Shape: (window_size, 21) - filter columns by 'PPC' tag
-
-            if X_train.shape[0] < self.model_params['n_steps']:
-                print(f"Warning: Data window size too small ({X_train.shape[0]} days) for model input ({self.model_params['n_steps']} steps). Skipping this window.")
-                continue # Skip windows smaller than n_steps
-
-            # Reshape for LSTM input (batch_size, timesteps, features) - batch_size=1 for single window
-            X_train_reshaped = np.array([X_train[-self.model_params['n_steps']:]]) # Take last n_steps days
-            y_target_reshaped = np.array([y_target[-self.model_params['n_steps']:]]) # Take corresponding target probabilities
-
-            if np.isnan(X_train_reshaped).any() or np.isnan(y_target_reshaped).any():
-                print("Warning: NaN values found in training data or targets. Skipping this batch.")
+            if X_eval.shape[0] < self.model_params['n_steps']:
                 continue
 
-            y_pred = self.model(X_train_reshaped) # Get model predictions - shape (1, n_steps, 21)
+            eval_X_train_windowed = []
+            y_target_windowed = []
+            for i in range(self.model_params['n_steps'], X_eval.shape[0] + 1): # Create sliding windows (same as dataset creation)
+                eval_X_train_windowed.append(eval_X_train[i - self.model_params['n_steps']:i])
+                y_target_windowed.append(y_target[i-1, :]) # Use i-1 to get the target corresponding to window end
 
-            all_predictions.append([model_data.end_date] + y_target_reshaped[:, -1, :].flatten().tolist() + y_pred.numpy().flatten().tolist())
+            num_windows_eval = len(eval_X_train_windowed) # Number of windows in this ModelData entry
+            y_target_reshaped_windows = np.array(y_target_windowed) # Targets for this ModelData entry
 
-            # Take only the LAST prediction in the sequence for each probability, shape (1, 21)
-            y_pred_last_step = y_pred[:, :]  # Shape: (1, 21)
+            # Get predictions corresponding to this ModelData entry
+            current_predictions = predictions[batch_index : batch_index + num_windows_eval] # Extract slice
+            batch_index += num_windows_eval # Update batch index
 
-            # Calculate loss using MSE - comparing last prediction with the LAST target probabilities
-            loss = tf.keras.losses.MeanSquaredError()(y_target_reshaped[:, -1, :], y_pred_last_step) # Compare last step predictions with last step target
+            # Calculate Loss for this ModelData entry (if needed for detailed per-window loss)
+            loss = tf.keras.losses.MeanSquaredError()(y_target_reshaped_windows, current_predictions) # Loss for this window
             average_loss += loss.numpy() / len(model_data_entries)
+
+
+            # Prepare predictions for DataFrame - match to the sliding windows we created
+            for i in range(num_windows_eval):
+                all_predictions.append([model_data.end_date] + y_target_reshaped_windows[i, :].flatten().tolist() + current_predictions[i, :].tolist()) #  target and prediction
 
             print(f"  - Evaluated on window starting {model_data.start_date.date()}, Loss: {loss.numpy():.4f}")
 
-        print(f"\n--- Price Prediction Training for ticker {self.ticker} Complete, average loss after training: {average_loss:.4f} ---")
+
+        print(f"\n--- Price Prediction Evaluation for ticker {self.ticker} Complete, average loss after evaluation: {average_loss:.4f} ---")
         return pd.DataFrame(all_predictions, columns=['Date'] + y_target_columns + list(map(lambda c: f'Predicted_{c}', y_target_columns)))
 
 # Example Usage (for testing PricePredictionTrainingAgent)
@@ -323,7 +325,9 @@ if __name__ == '__main__':
     agent_params = {
         'n_steps': 60, # Example window size matching data window
         'n_units': 32,
+        'learning_rate': 0.0001
     }
+    batch_size = 64
 
     agent = PricePredictionTrainingAgent(
         train_data_list=train_data_list, # Pass train data list
@@ -331,6 +335,6 @@ if __name__ == '__main__':
         ticker=ticker,
         model_params=agent_params
     )
-    agent.train_model(epochs=5) # Train for 5 epochs
+    agent.train_model(epochs=5, batch_size=batch_size) # Train for 5 epochs
 
     print("\n--- PricePredictionTrainingAgent Run Completed ---")
