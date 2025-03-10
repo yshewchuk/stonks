@@ -13,6 +13,8 @@ from model.simulation import Simulation
 from model.ticker_history import TickerHistory
 from model.model_data import ModelData # Import the ModelData DTO
 from model.percent_price_change_probability import PercentPriceChangeProbability
+from model.relative_strength import RSI
+from model.macd import MACD
 
 RAW_DATA_USED_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']  # Columns used from raw dataset
 PRICE_COLUMN_TAGS = ['Open', 'High', 'Low', 'Close', 'MA', 'Hi', 'Lo'] # List of price column tags
@@ -24,7 +26,9 @@ HISTORICAL_DATA_FEATURE_ALLOWLIST = [
     'MA5', 'MA20', 'MA50',
     'Hi5', 'Lo5',
     'Hi20', 'Lo20',
-    'Hi50', 'Lo50'
+    'Hi50', 'Lo50',
+    'RSI5', 'RSI20', 'RSI50',
+    'MoACD_Fast12_Slow26', 'MoACD_Signal_9', 'MoACD_Hist_12_26_9' # Include MACD features in allowlist
     # Exclude: DailyPercentChange (MaxPI30, MaxPD30, MaxDPI30) and PercentPriceChangeProbability (PPC_* columns) - these are future-looking
 ]
 
@@ -58,6 +62,11 @@ class DataManager:
         self.date_min = None
         self.date_max = None
         self.volume_scalers = {} # Store scalers for volume columns
+        self.rsi_scalers = {} # Store scalers for RSI features - NEW
+        self.macd_line_scalers = {} # Scalers for MACD Line - NEW
+        self.macd_signal_scalers = {} # Scalers for MACD Signal - NEW
+        self.macd_hist_scalers = {} # Scalers for MACD Histogram - NEW
+
 
         self._load_and_process_data()  # Load and process data during initialization
 
@@ -139,9 +148,14 @@ class DataManager:
             MovingAverage(5).extend(df)
             MovingAverage(20).extend(df)
             MovingAverage(50).extend(df)
+            RSI(5).extend(df)
+            RSI(20).extend(df)
+            RSI(50).extend(df)
             RollingHiLo(5).extend(df)
             RollingHiLo(20).extend(df)
             RollingHiLo(50).extend(df)
+            MACD().extend(df) # Calculate MACD indicators
+
             DailyPercentChange(30).extend(df)
 
             # --- Calculate Percent Price Change Probabilities ---
@@ -178,7 +192,7 @@ class DataManager:
             return None
 
         return df
-    
+
     def _generate_processed_model_data(self, start_date, data_window_size, scaling_window_size):
         """
         Internal method to generate a processed ModelData DTO for a given start date and window sizes.
@@ -193,7 +207,7 @@ class DataManager:
 
         Returns:
             ModelData: A ModelData DTO instance containing scaled historical data and unscaled complete data.
-                    Returns None if data window is empty or scaling fails.
+                        Returns None if data window is empty or scaling fails.
         """
         if not isinstance(start_date, pd.Timestamp):
             raise ValueError("start_date must be a pandas Timestamp.")
@@ -217,7 +231,7 @@ class DataManager:
         if not len(data_window_dates): # Check if data_window_dates is empty after extraction
             print("Warning: No data window dates generated. Check date range and window sizes.")
             return None
-        
+
         unscaled_window_df = self.data.loc[data_window_dates]
         if unscaled_window_df.empty:
             print("Warning: Extracted data window DataFrame is empty after date range extraction.")
@@ -229,26 +243,25 @@ class DataManager:
             if col[0] in NON_STOCK_FEATURES or col[1] in HISTORICAL_DATA_FEATURE_ALLOWLIST: # Check if column tag is in allowlist
                 historical_data_columns.append(col)
 
-        # --- Volume Scaling (Apply volume scaling WITHIN this data window using the scaling_window dates) ---
+        # --- Scaling (Apply scaling WITHIN this data window using the scaling_window dates) ---
         scaled_window_df = unscaled_window_df[historical_data_columns].copy() # Start with a copy for scaling
 
         scaling_window_df = unscaled_window_df.iloc[:scaling_window_size] # <---- **REFINED:** Scaling window from *unscaled* data
-        # --- Price Scaling (Apply window-based price scaling AFTER volume scaling) ---
-        scaled_window_df = self._scale_volume_window(scaled_window_df, scaling_window_df)
+        scaled_window_df = self._scale_non_price_window(scaled_window_df, scaling_window_df) # Scale non-price data (Volume, RSI, MACD)
         scaled_window_df = self._scale_price_window(scaled_window_df) # Apply window-based price scaling
 
         # --- Create and return ModelData DTO with both scaled and unscaled DataFrames ---
         model_data_dto = ModelData(scaled_window_df, unscaled_window_df, self.tickers)
         return model_data_dto
 
-    def _scale_volume_window(self, window_df, scaling_window_df):
+    def _scale_non_price_window(self, window_df, scaling_window_df):
         """
-        Scales price-related data within a given data window (DataFrame)
-        relative to the 'Open' price of the first day in the window.
-        Volume data in the window is assumed to be already globally scaled.
+        Scales non-price-related data within a given data window (DataFrame) such as volume, RSI, MACD,
+        and other values that aren't specific to the price of the stock.
 
         Args:
             window_df (pd.DataFrame): A DataFrame representing a data window for a single ticker.
+            scaling_window_df (pd.DataFrame): DataFrame for the scaling window (subset of data window).
 
         Returns:
             pd.DataFrame: The scaled data window DataFrame.
@@ -263,18 +276,39 @@ class DataManager:
             raise ValueError("scaling_window_df must be a subset of window_df.")
 
         for ticker in self.tickers:
-            # Fit volume scaler on the provided scaling_window dates
+            # --- Volume Scaling ---
             scaling_volume_data = scaling_window_df[(ticker, 'Volume')].values.reshape(-1, 1)
             if not scaling_volume_data.size: # Handle case where scaling window has no data for volume scaling
                 print(f"Warning: No volume data in scaling window for ticker {ticker}. Skipping volume scaling for this ticker in this window.")
-                continue # Skip to next ticker - volume will remain unscaled in this window for this ticker
+                continue
 
-            scaler = MinMaxScaler()
-            scaler.fit(scaling_volume_data)
-
-            # Apply the scaler to the volume data within the CURRENT data window (data_window_dates)
+            volume_scaler = MinMaxScaler() # Create volume scaler here - unique per ticker and window
+            volume_scaler.fit(scaling_volume_data)
             volume_data_in_window = window_df[(ticker, 'Volume')].values.reshape(-1, 1)
-            window_df[(ticker, 'Volume')] = scaler.transform(volume_data_in_window).flatten() # Flatten to avoid column shape issues
+            window_df[(ticker, 'Volume')] = volume_scaler.transform(volume_data_in_window).flatten()
+
+            # --- RSI Scaling ---
+            rsi5_scaler = MinMaxScaler((0, 1)) # Create RSI scalers - unique per ticker and RSI period
+            rsi20_scaler = MinMaxScaler((0, 1))
+            rsi50_scaler = MinMaxScaler((0, 1))
+
+            window_df[((ticker, 'RSI5'))] = rsi5_scaler.fit_transform(window_df[(ticker, 'RSI5')].values.reshape(-1, 1)) # Fit AND transform in window
+            window_df[((ticker, 'RSI20'))] = rsi20_scaler.fit_transform(window_df[(ticker, 'RSI20')].values.reshape(-1, 1))
+            window_df[((ticker, 'RSI50'))] = rsi50_scaler.fit_transform(window_df[(ticker, 'RSI50')].values.reshape(-1, 1))
+
+            # --- MACD Feature Scaling ---
+            macd_line_scaler = MinMaxScaler((0, 1)) # Scalers for MACD components - unique per ticker
+            macd_signal_scaler = MinMaxScaler((0, 1))
+            macd_hist_scaler = MinMaxScaler((0, 1))
+
+            macd_fast_slow_col = (ticker, 'MoACD_Fast12_Slow26') # Column names for MACD features
+            macd_signal_col = (ticker, 'MoACD_Signal_9')
+            macd_hist_col = (ticker, 'MoACD_Hist_12_26_9')
+
+            window_df[macd_fast_slow_col] = macd_line_scaler.fit_transform(window_df[[macd_fast_slow_col]].values) # Fit & transform MACD Line
+            window_df[macd_signal_col] = macd_signal_scaler.fit_transform(window_df[[macd_signal_col]].values) # Fit & transform MACD Signal
+            window_df[macd_hist_col] = macd_hist_scaler.fit_transform(window_df[[macd_hist_col]].values) # Fit & transform MACD Histogram
+
 
         return window_df
 
@@ -309,7 +343,7 @@ class DataManager:
         1. window-based price scaled 'historical_data' (for model input) - SCALING DONE BY DATAMANAGER
         2. complete, unscaled, processed 'complete_data' (for reward calculation, etc.)
 
-        Volume data in windows is GLOBALLY scaled (done during DataManager initialization).
+        Volume, RSI, and MACD data in windows are also window-based scaled within `_scale_non_price_window`.
 
         Args:
             window_size (int): The size of each data window in days (e.g., 60 days).
@@ -317,7 +351,7 @@ class DataManager:
 
         Yields:
             ModelData: ModelData DTO instance representing a data window with both scaled and unscaled data,
-                       or None if no valid windows can be created.
+                         or None if no valid windows can be created.
         """
         if not isinstance(window_size, int) or window_size <= 0:
             raise ValueError("window_size must be a positive integer.")
@@ -367,7 +401,7 @@ class DataManager:
         if self.data is None or self.data.empty:
             print("Warning: No data available to create simulations. Model data is empty or not loaded.")
             return []  # Return empty list if no data
-        
+
         simulations = []
         valid_simulation_dates = 0  # Counter for successfully created simulations
 
@@ -463,8 +497,8 @@ if __name__ == '__main__':
                     break # Just print for the first simulation as an example
 
 
-            else:
-                print("\n❌ DataManager could not be initialized. Check warnings and errors above.")
+        else:
+            print("\n❌ DataManager could not be initialized. Check warnings and errors above.")
 
     except ValueError as e:
         print(f"Error during DataManager initialization or processing: {e}")

@@ -46,7 +46,7 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
     agent.train_model(training_windows, eval_windows, 200) # Train for 2 epochs, window size 5
 
     os.makedirs('saved_model', exist_ok=True)
-    agent.model.save('saved_model/model3.keras')
+    agent.model.save('saved_model/model4.keras')
 
     return
 

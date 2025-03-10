@@ -54,22 +54,16 @@ class PricePredictionTrainingAgent:
 
         return {
             'n_steps': 60, # Example window size, adjust as needed
-            'n_units': 128,
+            'n_units': 256,
             'n_output_probabilities': n_output_probabilities, # Output size is now number of probabilities
-            'learning_rate': 0.001,
-            'dropout_rate': 0.3
+            'learning_rate': 0.0025,
+            'dropout_rate': 0.2
         }
 
     def _create_default_model(self, model_params):
         """Creates a default LSTM model for price prediction."""
         return tf.keras.Sequential([
             tf.keras.layers.Input(shape=(model_params['n_steps'], model_params['n_features_total'])),
-            tf.keras.layers.LSTM(units=model_params['n_units'], return_sequences=True),
-            tf.keras.layers.Dropout(model_params['dropout_rate']),
-            tf.keras.layers.LSTM(units=model_params['n_units'], return_sequences=True),
-            tf.keras.layers.Dropout(model_params['dropout_rate']),
-            tf.keras.layers.LSTM(units=model_params['n_units'], return_sequences=True),
-            tf.keras.layers.Dropout(model_params['dropout_rate']),
             tf.keras.layers.LSTM(units=model_params['n_units']),
             tf.keras.layers.Dropout(model_params['dropout_rate']),
             tf.keras.layers.Dense(units=model_params['n_units']//2, activation='relu'),
@@ -176,8 +170,8 @@ class PricePredictionTrainingAgent:
         eval_dataset = self._create_dataset(eval_data_list, batch_size=batch_size, shuffle=False)
 
         print("\n--- Starting model.fit() training ---")
-        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=12, min_lr=0.0001)
-        stop_training = tf.keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=80, verbose=1, restore_best_weights=True, start_from_epoch=40)
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=8, min_lr=0.00001)
+        stop_training = tf.keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=30, verbose=1, restore_best_weights=True, start_from_epoch=5)
         history = self.model.fit( # --- Use model.fit() ---
             train_dataset,          # Training data dataset
             epochs=epochs,              # Number of epochs
@@ -246,20 +240,9 @@ class PricePredictionTrainingAgent:
             if model_data.historical_data is None or model_data.historical_data.empty:
                 continue
 
-            X_eval = model_data.historical_data.xs(self.ticker, level='Ticker', axis=1).values
             y_target = model_data.complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').values
 
-            if X_eval.shape[0] < self.model_params['n_steps']:
-                continue
-
-            eval_X_train_windowed = []
-            y_target_windowed = []
-            for i in range(self.model_params['n_steps'], X_eval.shape[0] + 1): # Create sliding windows (same as dataset creation)
-                eval_X_train_windowed.append(eval_X_train[i - self.model_params['n_steps']:i])
-                y_target_windowed.append(y_target[i-1, :]) # Use i-1 to get the target corresponding to window end
-
-            num_windows_eval = len(eval_X_train_windowed) # Number of windows in this ModelData entry
-            y_target_reshaped_windows = np.array(y_target_windowed) # Targets for this ModelData entry
+            y_target_arr = np.array(y_target.iloc[-1].values).flatten()
 
             # Get predictions corresponding to this ModelData entry
             current_predictions = predictions[batch_index : batch_index + num_windows_eval] # Extract slice
@@ -267,7 +250,7 @@ class PricePredictionTrainingAgent:
 
             # Calculate Loss for this ModelData entry (if needed for detailed per-window loss)
             loss = tf.keras.losses.MeanSquaredError()(y_target_reshaped_windows, current_predictions) # Loss for this window
-            average_loss += loss.numpy() / len(model_data_entries)
+            average_loss += loss.numpy() / len(eval_data_list)
 
 
             # Prepare predictions for DataFrame - match to the sliding windows we created
