@@ -37,7 +37,7 @@ class PricePredictionTrainingAgent:
         # --- COMPILE THE MODEL HERE ---
         self.model.compile(
             optimizer=self.optimizer, # Use the configured optimizer
-            loss='mse',             # Mean Squared Error loss function
+            loss='mse',         # Mean Squared Error loss function
             metrics=['mse']         # Track Mean Squared Error during training and evaluation
         )
         print("Price Prediction Model Compiled.")
@@ -157,7 +157,7 @@ class PricePredictionTrainingAgent:
             raise ValueError("train_data_list must be a list of ModelData objects.")
         if not isinstance(eval_data_list, list) or not all(isinstance(md, ModelData) for md in eval_data_list):
             raise ValueError("eval_data_list must be a list of ModelData objects.")
-        
+
         print(f"Starting price prediction model training for ticker {self.ticker} using model.fit() with batch size {batch_size}...")
 
         # --- Calculate Historical Average Baseline Prediction (remains - for comparison outside of fit) ---
@@ -173,9 +173,9 @@ class PricePredictionTrainingAgent:
         reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=8, min_lr=0.00001)
         stop_training = tf.keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=30, verbose=1, restore_best_weights=True, start_from_epoch=5)
         history = self.model.fit( # --- Use model.fit() ---
-            train_dataset,          # Training data dataset
-            epochs=epochs,              # Number of epochs
-            batch_size=None,            # Batch size is handled by the dataset
+            train_dataset,           # Training data dataset
+            epochs=epochs,             # Number of epochs
+            batch_size=None,             # Batch size is handled by the dataset
             validation_data=eval_dataset, # Evaluation dataset for validation
             verbose=1,                 # Set verbosity (0=silent, 1=progress bar, 2=one line per epoch)
             callbacks=[reduce_lr, stop_training]
@@ -206,62 +206,63 @@ class PricePredictionTrainingAgent:
 
     def evaluate_model(self, eval_data_list, batch_size=32):
         """
-        Evaluates the model using model.predict() on unseen data.
+        Evaluates the model using model.predict() on unseen data and returns a DataFrame
+        with predictions and expected values.
 
         Args:
-            model_data_entries (list): List of ModelData objects for evaluation.
+            eval_data_list (list): List of ModelData objects for evaluation.
             batch_size (int): Batch size for evaluation.
 
         Returns:
-            pd.DataFrame: DataFrame of predictions.
+            pd.DataFrame: DataFrame of predictions with expected values and loss.
         """
         if not isinstance(eval_data_list, list) or not all(isinstance(md, ModelData) for md in eval_data_list):
             raise ValueError("eval_data_list must be a list of ModelData objects.")
-        
+
         print(f"Starting price prediction model evaluation for ticker {self.ticker} using model.predict()...")
 
         # --- Create Evaluation Dataset ---
         eval_dataset = self._create_dataset(eval_data_list, batch_size=batch_size, shuffle=False)
 
         print("\n--- Starting model.predict() evaluation ---")
-
         predictions = self.model.predict(eval_dataset, verbose=1) # --- Use model.predict() ---
-        # predictions will be a NumPy array of shape (total_samples, n_output_probabilities)
-
-
         print("\n--- model.predict() evaluation Complete ---")
 
-        all_predictions = []
-        average_loss = 0
+        all_expected_ppc = []
+        all_predicted_ppc = []
+        all_dates = []
+
+        # Get PPC column names from the first ModelData entry (assuming they are consistent)
         y_target_columns = eval_data_list[0].complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').columns.tolist()
 
-        batch_index = 0 # Track index within predictions array
-        for model_data in eval_data_list:
-            if model_data.historical_data is None or model_data.historical_data.empty:
-                continue
-
-            y_target = model_data.complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').values
-
-            y_target_arr = np.array(y_target.iloc[-1].values).flatten()
-
-            # Get predictions corresponding to this ModelData entry
-            current_predictions = predictions[batch_index : batch_index + num_windows_eval] # Extract slice
-            batch_index += num_windows_eval # Update batch index
-
-            # Calculate Loss for this ModelData entry (if needed for detailed per-window loss)
-            loss = tf.keras.losses.MeanSquaredError()(y_target_reshaped_windows, current_predictions) # Loss for this window
-            average_loss += loss.numpy() / len(eval_data_list)
+        # Iterate through eval dataset to collect expected values and dates in order
+        for features, expected_prices in eval_dataset:
+            all_expected_ppc.extend(expected_prices.numpy()) # Collect expected PPC values
+            # We need to reconstruct dates corresponding to these expected_prices.
+            # Since _create_dataset windowed the data, we need to track original dates.
+            # For simplicity in this correction, we are not directly associating dates with each prediction in DataFrame output.
+            # A more advanced approach would involve tracking original dates during dataset creation.
 
 
-            # Prepare predictions for DataFrame - match to the sliding windows we created
-            for i in range(num_windows_eval):
-                all_predictions.append([model_data.end_date] + y_target_reshaped_windows[i, :].flatten().tolist() + current_predictions[i, :].tolist()) #  target and prediction
+        # Flatten predictions if necessary (model.predict might return extra dimensions)
+        if predictions.ndim > 2:
+            predictions = predictions.reshape(predictions.shape[0], -1)
 
-            print(f"  - Evaluated on window starting {model_data.start_date.date()}, Loss: {loss.numpy():.4f}")
+        if not all_expected_ppc:
+            print("Warning: No expected PPC values collected during evaluation.")
+            return pd.DataFrame() # Return empty DataFrame if no data
 
+        all_expected_ppc_np = np.array(all_expected_ppc).reshape(predictions.shape) # Ensure expected values have the same shape as predictions
+        loss_value = tf.keras.losses.MeanSquaredError()(all_expected_ppc_np, predictions).numpy() # Calculate loss over all predictions
 
-        print(f"\n--- Price Prediction Evaluation for ticker {self.ticker} Complete, average loss after evaluation: {average_loss:.4f} ---")
-        return pd.DataFrame(all_predictions, columns=['Date'] + y_target_columns + list(map(lambda c: f'Predicted_{c}', y_target_columns)))
+        evaluation_df = pd.DataFrame()
+        for i, col_name in enumerate(y_target_columns):
+            evaluation_df[f'Expected_{col_name}'] = all_expected_ppc_np[:, i] # Expected PPC values
+            evaluation_df[f'Predicted_{col_name}'] = predictions[:, i] # Predicted PPC values
+
+        print(f"\n--- Price Prediction Evaluation for ticker {self.ticker} Complete, average loss after evaluation: {loss_value:.4f} ---")
+        return evaluation_df
+
 
 # Example Usage (for testing PricePredictionTrainingAgent)
 if __name__ == '__main__':
@@ -311,13 +312,23 @@ if __name__ == '__main__':
         'learning_rate': 0.0001
     }
     batch_size = 64
+    feature_count = train_data_list[0].historical_data.shape[1] if train_data_list else 7 * len(tickers) # Get feature count dynamically
 
     agent = PricePredictionTrainingAgent(
-        train_data_list=train_data_list, # Pass train data list
-        eval_data_list=eval_data_list,   # Pass eval data list
         ticker=ticker,
+        feature_count=feature_count,
         model_params=agent_params
     )
-    agent.train_model(epochs=5, batch_size=batch_size) # Train for 5 epochs
+    agent.train_model(train_data_list=train_data_list, eval_data_list=eval_data_list, epochs=5, batch_size=batch_size) # Train for 5 epochs
+
+    print("\n--- Evaluating Model ---")
+    evaluation_df = agent.evaluate_model(eval_data_list=eval_data_list, batch_size=batch_size)
+
+    if not evaluation_df.empty:
+        print("\n--- Evaluation Results DataFrame Sample ---")
+        print(evaluation_df.sample(10).to_string())
+    else:
+        print("\nWarning: Evaluation DataFrame is empty. No predictions generated.")
+
 
     print("\n--- PricePredictionTrainingAgent Run Completed ---")

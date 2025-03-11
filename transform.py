@@ -48,6 +48,8 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
     os.makedirs('saved_model', exist_ok=True)
     agent.model.save('saved_model/model4.keras')
 
+    agent.evaluate_model(eval_windows).to_csv('simulations/predictions.csv')
+
     return
 
 '''
