@@ -15,6 +15,7 @@ from model.model_data import ModelData # Import the ModelData DTO
 from model.percent_price_change_probability import PercentPriceChangeProbability
 from model.relative_strength import RSI
 from model.macd import MACD
+from model.lagged_features import LaggedFeatures
 
 RAW_DATA_USED_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']  # Columns used from raw dataset
 PRICE_COLUMN_TAGS = ['Open', 'High', 'Low', 'Close', 'MA', 'Hi', 'Lo'] # List of price column tags
@@ -31,6 +32,8 @@ HISTORICAL_DATA_FEATURE_ALLOWLIST = [
     'MoACD_Fast12_Slow26', 'MoACD_Signal_9', 'MoACD_Hist_12_26_9' # Include MACD features in allowlist
     # Exclude: DailyPercentChange (MaxPI30, MaxPD30, MaxDPI30) and PercentPriceChangeProbability (PPC_* columns) - these are future-looking
 ]
+
+LAG_PERIODS = [1, 2, 3] # Define lag periods in days
 
 class DataManager:
     """
@@ -86,7 +89,7 @@ class DataManager:
                 print(f"Warning: Could not load data from CSV for ticker {ticker} at {file_path}. Skipping ticker.")
                 continue
 
-            processed_df = self._standardize_and_calculate_performance(history.dataframe())
+            processed_df = self._standardize_and_calculate_performance(history.dataframe(), ticker) # Pass ticker here
             if processed_df is not None:
                 processed_stock_data[ticker] = processed_df
             else:
@@ -98,16 +101,29 @@ class DataManager:
             return
 
         self.stock_data = processed_stock_data
-        self.data = pd.concat(self.stock_data, axis='columns', join='inner', keys=self.stock_data.keys(), names=['Ticker']).dropna()
+        print(f"Before pd.concat, processed_stock_data keys: {list(self.stock_data.keys())}") # ADDED: Print keys
+        for ticker, df in self.stock_data.items(): # ADDED: Print shape and date range of each df
+            if df is not None and not df.empty:
+                print(f"  Ticker: {ticker}, Shape: {df.shape}, Date Range: {df.index.min()} to {df.index.max()}")
+                # Explicitly convert index to DateTimeIndex BEFORE concat
+                processed_stock_data[ticker].index = pd.to_datetime(processed_stock_data[ticker].index) # Convert index here
+            else:
+                print(f"  Ticker: {ticker}, DataFrame is None or Empty.")
+
+
+        # CHANGE join='inner' to join='outer' and REMOVE dropna() temporarily
+        self.data = pd.concat(processed_stock_data, axis='columns', join='outer', keys=processed_stock_data.keys(), names=['Ticker']) # Changed to 'outer' join, dropna REMOVED
+        print(f"After pd.concat, shape of self.data: {self.data.shape}") # ADDED: Shape after concat
+        print(f"Sample of self.data index after concat (before dropna/dedup):\n{self.data.index[:5]}") # ADDED: Sample index
+        print(f"Sample of self.data head after concat (before dropna/dedup):\n{self.data.head().to_string()}") # ADDED: Sample data
+        self.data = self.data.dropna()
+
         DateFeatures().extend(self.data)
 
         # --- ENSURE UNIQUE AND SORTED INDEX ---
         if not self.data.index.is_unique: # Check for index uniqueness
             print("Warning: Data index is not unique. Deduplicating index by keeping first entries.")
             self.data = self.data[~self.data.index.duplicated(keep='first')] # Keep first occurrence of duplicate indices
-            # Alternative deduplication strategies if needed:
-            # self.data = self.data.groupby(level=0).first() # Take the first entry for each date
-            # self.data = self.data.groupby(level=0).mean()  # Take the mean for each date if averaging is more appropriate
 
         self.data.sort_index(inplace=True) # Sort the index IN-PLACE after ensuring uniqueness
 
@@ -116,29 +132,35 @@ class DataManager:
 
         print(f"✅ DataManager data aggregated (indicators calculated, scaling NOT yet applied), index UNIQUE and SORTED for tickers: {self.tickers}. Date range: {self.date_min.date()} to {self.date_max.date()}")
 
-    def _standardize_and_calculate_performance(self, df):
+    def _standardize_and_calculate_performance(self, df, ticker): # Added ticker argument
         """
         Internal method to standardize data and calculate performance indicators
         (including Percent Price Change Probabilities) for a single ticker DataFrame.
 
         Extends the DataFrame with Moving Averages, Rolling Hi-Lo range indicators,
         and Percent Price Change Probability columns.
+        Also adds lagged features for allowed historical data columns.
         Note: Volume scaling is handled GLOBALLY in _scale_volume_data_globally method.
               Price scaling is WINDOW-BASED and will be applied later by DataManager.
 
         Args:
             df (pd.DataFrame): DataFrame for a single ticker, loaded from CSV (TickerHistory).
+            ticker (str): The ticker symbol for which the DataFrame is being processed. # Added ticker argument
 
         Returns:
-            pd.DataFrame: DataFrame with added performance indicators, or None if input DataFrame is invalid.
+            pd.DataFrame: DataFrame with added performance indicators and lagged features,
+                          or None if input DataFrame is invalid.
         """
+        print(f"Processing ticker: {ticker}") # ADDED: Start processing message
         if not isinstance(df, pd.DataFrame) or df.empty:
             print("Warning: Input DataFrame for performance calculation is invalid or empty.")
             return None
 
         # 1. Select Used Columns
         try:
+            print(f"  Before column selection, columns: {df.columns.tolist()}") # ADDED: Columns before selection
             df = df[RAW_DATA_USED_COLUMNS]
+            print(f"  After column selection, columns: {df.columns.tolist()}, shape: {df.shape}") # ADDED: Columns and shape after selection
         except KeyError as e:
             print(f"Error: Raw data is missing required columns: {e}. Required columns: {RAW_DATA_USED_COLUMNS}")
             return None
@@ -191,6 +213,12 @@ class DataManager:
             print(f"Error during performance indicator calculation: {e}")
             return None
 
+        # 3. Add Lagged Features - Using LaggedFeatures Class
+        lag_feature_calculator = LaggedFeatures(LAG_PERIODS, HISTORICAL_DATA_FEATURE_ALLOWLIST) # Instantiate LaggedFeatures
+        df = lag_feature_calculator.extend(df) # Extend DataFrame with lagged features
+
+
+        print(f"  Successfully processed ticker: {ticker}, final shape: {df.shape}") # ADDED: Success message and final shape
         return df
 
     def _generate_processed_model_data(self, start_date, data_window_size, scaling_window_size):
@@ -232,7 +260,7 @@ class DataManager:
             print("Warning: No data window dates generated. Check date range and window sizes.")
             return None
 
-        unscaled_window_df = self.data.loc[data_window_dates]
+        unscaled_window_df = self.data.loc[data_window_dates].copy() # Copy here to avoid modifying original data
         if unscaled_window_df.empty:
             print("Warning: Extracted data window DataFrame is empty after date range extraction.")
             return None
@@ -240,7 +268,7 @@ class DataManager:
         # --- **NEW: Filter columns for historical_data based on allowlist** ---
         historical_data_columns = []
         for col in unscaled_window_df.columns:
-            if col[0] in NON_STOCK_FEATURES or col[1] in HISTORICAL_DATA_FEATURE_ALLOWLIST: # Check if column tag is in allowlist
+            if col[0] in NON_STOCK_FEATURES or col[1].split('_Lag')[0] in HISTORICAL_DATA_FEATURE_ALLOWLIST: # Check original column tag before lagging
                 historical_data_columns.append(col)
 
         # --- Scaling (Apply scaling WITHIN this data window using the scaling_window dates) ---
@@ -250,14 +278,19 @@ class DataManager:
         scaled_window_df = self._scale_non_price_window(scaled_window_df, scaling_window_df) # Scale non-price data (Volume, RSI, MACD)
         scaled_window_df = self._scale_price_window(scaled_window_df) # Apply window-based price scaling
 
+        # --- Drop rows with NaN introduced by lagging, AFTER scaling ---
+        scaled_window_df.dropna(inplace=True)
+        unscaled_window_df = unscaled_window_df.loc[scaled_window_df.index] # Keep only non-NaN rows in unscaled_window_df as well
+
         # --- Create and return ModelData DTO with both scaled and unscaled DataFrames ---
-        model_data_dto = ModelData(scaled_window_df, unscaled_window_df, self.tickers)
+        model_data_dto = ModelData(scaled_window_df, unscaled_window_df, self.tickers) # Pass actual start and end dates after dropping NaNs
         return model_data_dto
 
     def _scale_non_price_window(self, window_df, scaling_window_df):
         """
         Scales non-price-related data within a given data window (DataFrame) such as volume, RSI, MACD,
         and other values that aren't specific to the price of the stock.
+        Scales columns based on prefixes: 'Volume', 'RSI', 'MoACD'.
 
         Args:
             window_df (pd.DataFrame): A DataFrame representing a data window for a single ticker.
@@ -275,39 +308,32 @@ class DataManager:
             print("Warning: Scaling window dates are NOT fully contained within data window dates.")
             raise ValueError("scaling_window_df must be a subset of window_df.")
 
+        prefixes_to_scale = ['Volume', 'RSI', 'MoACD'] # Prefixes for columns to scale
+        scalers = {} # Dictionary to store scalers, keyed by (ticker, prefix)
+
+
         for ticker in self.tickers:
-            # --- Volume Scaling ---
-            scaling_volume_data = scaling_window_df[(ticker, 'Volume')].values.reshape(-1, 1)
-            if not scaling_volume_data.size: # Handle case where scaling window has no data for volume scaling
-                print(f"Warning: No volume data in scaling window for ticker {ticker}. Skipping volume scaling for this ticker in this window.")
-                continue
+            for prefix in prefixes_to_scale:
+                scalers[(ticker, prefix)] = MinMaxScaler() # Initialize scaler for each ticker and prefix
 
-            volume_scaler = MinMaxScaler() # Create volume scaler here - unique per ticker and window
-            volume_scaler.fit(scaling_volume_data)
-            volume_data_in_window = window_df[(ticker, 'Volume')].values.reshape(-1, 1)
-            window_df[(ticker, 'Volume')] = volume_scaler.transform(volume_data_in_window).flatten()
+            for col in window_df.columns:
+                col_ticker, col_name = col # Unpack MultiIndex
 
-            # --- RSI Scaling ---
-            rsi5_scaler = MinMaxScaler((0, 1)) # Create RSI scalers - unique per ticker and RSI period
-            rsi20_scaler = MinMaxScaler((0, 1))
-            rsi50_scaler = MinMaxScaler((0, 1))
-
-            window_df[((ticker, 'RSI5'))] = rsi5_scaler.fit_transform(window_df[(ticker, 'RSI5')].values.reshape(-1, 1)) # Fit AND transform in window
-            window_df[((ticker, 'RSI20'))] = rsi20_scaler.fit_transform(window_df[(ticker, 'RSI20')].values.reshape(-1, 1))
-            window_df[((ticker, 'RSI50'))] = rsi50_scaler.fit_transform(window_df[(ticker, 'RSI50')].values.reshape(-1, 1))
-
-            # --- MACD Feature Scaling ---
-            macd_line_scaler = MinMaxScaler((0, 1)) # Scalers for MACD components - unique per ticker
-            macd_signal_scaler = MinMaxScaler((0, 1))
-            macd_hist_scaler = MinMaxScaler((0, 1))
-
-            macd_fast_slow_col = (ticker, 'MoACD_Fast12_Slow26') # Column names for MACD features
-            macd_signal_col = (ticker, 'MoACD_Signal_9')
-            macd_hist_col = (ticker, 'MoACD_Hist_12_26_9')
-
-            window_df[macd_fast_slow_col] = macd_line_scaler.fit_transform(window_df[[macd_fast_slow_col]].values) # Fit & transform MACD Line
-            window_df[macd_signal_col] = macd_signal_scaler.fit_transform(window_df[[macd_signal_col]].values) # Fit & transform MACD Signal
-            window_df[macd_hist_col] = macd_hist_scaler.fit_transform(window_df[[macd_hist_col]].values) # Fit & transform MACD Histogram
+                if col_ticker == ticker: # Only process for the current ticker
+                    for prefix in prefixes_to_scale:
+                        if col_name.startswith(prefix): # Check if column name starts with the prefix
+                            if prefix == 'Volume':
+                                scaling_data = scaling_window_df[col].values.reshape(-1, 1) # Use scaling_window_df for Volume
+                                if not scaling_data.size: # Handle empty scaling data
+                                    print(f"Warning: No scaling data for {col} in scaling window for ticker {ticker}. Skipping scaling for this column in this window.")
+                                    continue # Skip to the next column if no scaling data
+                                scaler = scalers[(ticker, prefix)] # Get pre-initialized scaler
+                                scaler.fit(scaling_data) # Fit scaler with scaling window data only for Volume
+                                data_in_window = window_df[col].values.reshape(-1, 1)
+                                window_df[col] = scaler.transform(data_in_window).flatten()
+                            elif prefix == 'RSI' or prefix == 'MoACD':
+                                scaler = scalers[(ticker, prefix)] # Get pre-initialized scaler
+                                window_df[col] = scaler.fit_transform(window_df[col].values.reshape(-1, 1)).flatten() # Fit AND transform RSI and MoACD in window directly
 
 
         return window_df
@@ -330,7 +356,7 @@ class DataManager:
                 first_open_price_in_window = 1.0 # Avoid division by zero
 
             for col in self.data.columns:
-                if col[0] == ticker and any(tag in col[1] for tag in PRICE_COLUMN_TAGS):
+                if col[0] == ticker and any(tag in col[1].split('_Lag')[0] for tag in PRICE_COLUMN_TAGS): # Check original tag before lagging
                     window_df[col] = (window_df[col] - first_open_price_in_window) / first_open_price_in_window
 
         return window_df
@@ -465,9 +491,11 @@ if __name__ == '__main__':
 
             print(f"\n--- Sample Price Prediction Window (Window-Based Scaled - from ModelData DTO, Size: {window_size} days) ---")
             print(sample_scaled_window_df.to_string()) # Print SCALED data sample
+            print(f"\nScaled Data Columns:\n{sample_scaled_window_df.columns.to_list()}") # Print scaled data columns to verify lagged features
 
             print(f"\n--- Sample of UNscaled Complete Data (from ModelData DTO, Date Range: {window_start_date.date()} to {window_end_date.date()}) ---")
             print(sample_unscaled_window_df.sample(5).sort_index().to_string()) # Print UNSCALED data sample
+            print(f"\nUnscaled Data Columns:\n{sample_unscaled_window_df.columns.to_list()}") # Print unscaled data columns
             print(f"\nModelData DTO Start Date: {window_start_date.date()}, End Date: {window_end_date.date()}")
 
 

@@ -36,6 +36,9 @@ def load_and_transform_stock_data(raw_data_dir, transformed_data_dir, tickers, f
     data_manager.save_to_csv('model_data/stock.csv')
     windows = data_manager.create_price_prediction_windows()
 
+    for model_data in windows:
+        model_data.save_to_disk(f'price_prediction/data_with_lags/{model_data.end_date.strftime('%Y-%m-%d')}/data')
+
     training_windows = list(itertools.islice(windows, 2530))
     eval_windows = list(itertools.islice(windows, 60, 530))
 
