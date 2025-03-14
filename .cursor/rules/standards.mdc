@@ -1,0 +1,7 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+- Scripts created to test out functionality should be added to the /tests folder
+- Do not introduce new dependencies on third party packages unless you have exhausted all other options

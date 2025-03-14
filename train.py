@@ -1,4 +1,3 @@
-
 import os
 import pandas as pd
 import numpy as np
@@ -18,10 +17,10 @@ from model.price_prediction_training_agent import PricePredictionTrainingAgent
 from model.rolling_hi_lo import RollingHiLo
 from model.simulation import Simulation
 from model.simulation_state import SimulationState
-from model.ticker_history import TickerHistory
+from data_sources.ticker_history import TickerHistory
 from model.transaction import Transaction
 from utils.dataframe import print_dataframe_debugging_info
-from utils.obj import print_public_interface 
+from utils.obj import print_public_interface
 
 def load_model_data_from_disk_bulk(base_dir='price_prediction/data_with_lags'):
     """

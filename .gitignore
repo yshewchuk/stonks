@@ -2,3 +2,6 @@
 *.pyc
 *.keras
 *.json
+*.parquet
+data
+models

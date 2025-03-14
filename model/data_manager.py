@@ -10,7 +10,7 @@ from model.portfolio import Portfolio
 from model.rolling_hi_lo import RollingHiLo
 from model.max_percent_change_per_day import DailyPercentChange
 from model.simulation import Simulation
-from model.ticker_history import TickerHistory
+from data_sources.ticker_history import TickerHistory
 from model.model_data import ModelData # Import the ModelData DTO
 from model.percent_price_change_probability import PercentPriceChangeProbability
 from model.relative_strength import RSI
@@ -83,54 +83,33 @@ class DataManager:
 
         for ticker in self.tickers:
             print(f'Reading data file for ticker: {ticker}')
-            file_path = os.path.join(self.raw_data_dir, f'{ticker}.csv')
-            history = TickerHistory(ticker)
-            if not history.load_from_csv(file_path):
-                print(f"Warning: Could not load data from CSV for ticker {ticker} at {file_path}. Skipping ticker.")
+            
+            try:
+                # TickerHistory now always downloads data from yfinance
+                df = TickerHistory.load_dataframe(
+                    ticker=ticker, 
+                    period="max"
+                )
+                
+                processed_df = self._standardize_and_calculate_performance(df, ticker) # Pass ticker here
+                if processed_df is not None:
+                    processed_stock_data[ticker] = processed_df
+                else:
+                    print(f"Warning: Processing failed for ticker {ticker}. Skipping ticker.")
+            except Exception as e:
+                print(f"Warning: Could not download data for ticker {ticker}: {e}. Skipping ticker.")
                 continue
 
-            processed_df = self._standardize_and_calculate_performance(history.dataframe(), ticker) # Pass ticker here
-            if processed_df is not None:
-                processed_stock_data[ticker] = processed_df
-            else:
-                print(f"Warning: Processing failed for ticker {ticker}. Skipping ticker.")
+        self.ticker_dfs = processed_stock_data
+        self.ticker_highs = {ticker: df['High'].max() for ticker, df in processed_stock_data.items()}
+        self.ticker_lows = {ticker: df['Low'].min() for ticker, df in processed_stock_data.items()}
 
-        if not processed_stock_data:
-            print("Error: No valid stock data loaded for any ticker. DataManager initialization failed.")
-            self.data = None
-            return
-
-        self.stock_data = processed_stock_data
-        print(f"Before pd.concat, processed_stock_data keys: {list(self.stock_data.keys())}") # ADDED: Print keys
-        for ticker, df in self.stock_data.items(): # ADDED: Print shape and date range of each df
-            if df is not None and not df.empty:
-                print(f"  Ticker: {ticker}, Shape: {df.shape}, Date Range: {df.index.min()} to {df.index.max()}")
-                # Explicitly convert index to DateTimeIndex BEFORE concat
-                processed_stock_data[ticker].index = pd.to_datetime(processed_stock_data[ticker].index) # Convert index here
-            else:
-                print(f"  Ticker: {ticker}, DataFrame is None or Empty.")
-
-
-        # CHANGE join='inner' to join='outer' and REMOVE dropna() temporarily
-        self.data = pd.concat(processed_stock_data, axis='columns', join='outer', keys=processed_stock_data.keys(), names=['Ticker']) # Changed to 'outer' join, dropna REMOVED
-        print(f"After pd.concat, shape of self.data: {self.data.shape}") # ADDED: Shape after concat
-        print(f"Sample of self.data index after concat (before dropna/dedup):\n{self.data.index[:5]}") # ADDED: Sample index
-        print(f"Sample of self.data head after concat (before dropna/dedup):\n{self.data.head().to_string()}") # ADDED: Sample data
-        self.data = self.data.dropna()
-
-        DateFeatures().extend(self.data)
-
-        # --- ENSURE UNIQUE AND SORTED INDEX ---
-        if not self.data.index.is_unique: # Check for index uniqueness
-            print("Warning: Data index is not unique. Deduplicating index by keeping first entries.")
-            self.data = self.data[~self.data.index.duplicated(keep='first')] # Keep first occurrence of duplicate indices
-
-        self.data.sort_index(inplace=True) # Sort the index IN-PLACE after ensuring uniqueness
-
+        self.data = pd.concat(processed_stock_data.values(), axis=0)
+        self.data.sort_index(inplace=True)
         self.date_min = self.data.index.min()
         self.date_max = self.data.index.max()
 
-        print(f"✅ DataManager data aggregated (indicators calculated, scaling NOT yet applied), index UNIQUE and SORTED for tickers: {self.tickers}. Date range: {self.date_min.date()} to {self.date_max.date()}")
+        return True
 
     def _standardize_and_calculate_performance(self, df, ticker): # Added ticker argument
         """
