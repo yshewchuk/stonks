@@ -135,6 +135,7 @@ def write_dataframes_to_parquet(dataframes_dict, config):
         print(f"❌ Error: config must contain an {OUTPUT_DIR} key")
         return False
         
+    current = 0
     try:
         # Ensure the output directory exists
         output_dir = config[OUTPUT_DIR]
@@ -147,8 +148,11 @@ def write_dataframes_to_parquet(dataframes_dict, config):
             filepath = os.path.join(output_dir, filename)
             
             # Write dataframe to parquet file
-            df.to_parquet(filepath, index=True)
-            print(f"✅ DataFrame '{name}' saved to {filepath}")
+            df.to_parquet(filepath, index=True, compression='snappy')
+
+            current += 1
+            if len(dataframes_dict) > 200 and current % 100 == 0:
+                print(f"✅ DataFrame '{name}' saved to {filepath}")
             
         return True
         
@@ -239,3 +243,69 @@ def truncate_recent_data(df, rows_to_remove, min_rows_required=None):
     truncated_df = df.iloc[:-rows_to_remove]
     
     return truncated_df
+
+def create_time_windows(df, window_size, step_size=None, dropna=True):
+    """
+    Splits a time series DataFrame into fixed-length time windows.
+    
+    Args:
+        df (pd.DataFrame): DataFrame with a datetime index
+        window_size (int): Number of days in each window
+        step_size (int, optional): Number of days to slide forward for each new window. 
+                                  If None, windows don't overlap (step_size = window_size).
+        dropna (bool, optional): Whether to drop windows containing NaN values. Default is True.
+        
+    Returns:
+        list: List of DataFrames representing the time windows
+    """
+    if not isinstance(df, pd.DataFrame):
+        print("❌ Error: Input must be a pandas DataFrame")
+        return []
+    
+    # Ensure index is datetime type
+    if not pd.api.types.is_datetime64_any_dtype(df.index):
+        print("❌ Error: DataFrame index must be datetime type")
+        return []
+    
+    # Sort by date to ensure correct window creation
+    df = df.sort_index()
+    
+    # If step_size not provided, set it equal to window_size (non-overlapping windows)
+    if step_size is None:
+        step_size = window_size
+    
+    # Calculate minimum size needed for creating at least one window
+    if len(df) < window_size:
+        print(f"❌ Error: DataFrame has {len(df)} rows, need at least {window_size} rows for a window")
+        return []
+    
+    windows = []
+    start_idx = 0
+    
+    # Create windows until we reach the end of the DataFrame
+    while start_idx + window_size <= len(df):
+        # Extract the window
+        window = df.iloc[start_idx:start_idx + window_size].copy()
+        
+        # Check for NaN values if dropna is True
+        if dropna and window.isna().any().any():
+            print(f"⚠️ Dropping window at index {start_idx} due to NaN values")
+        else:
+            # Get the date range for naming the window
+            start_date = window.index[0].strftime('%Y-%m-%d')
+            end_date = window.index[-1].strftime('%Y-%m-%d')
+            
+            # Name the window by its date range
+            window.name = f"{start_date}_to_{end_date}"
+            
+            # Add the window to the list
+            windows.append(window)
+            
+            if start_idx % 100 == 0:
+                print(f"✅ Created window {window.name}: {len(window)} days")
+        
+        # Move forward by step_size
+        start_idx += step_size
+    
+    print(f"✅ Created {len(windows)} time windows of {window_size} days each")
+    return windows
