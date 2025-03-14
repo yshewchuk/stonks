@@ -57,13 +57,14 @@ class PricePredictionTrainingAgent:
             'n_units': 128,
             'n_output_probabilities': n_output_probabilities, # Output size is now number of probabilities
             'learning_rate': 0.001,
-            'dropout_rate': 0.6
+            'dropout_rate': 0
         }
 
     def _create_default_model(self, model_params):
         """Creates a default LSTM model for price prediction."""
         return tf.keras.Sequential([
             tf.keras.layers.Input(shape=(model_params['n_steps'], model_params['n_features_total'])),
+            tf.keras.layers.LSTM(units=model_params['n_units'], dropout=model_params['dropout_rate'], return_sequences=True),
             tf.keras.layers.LSTM(units=model_params['n_units'], dropout=model_params['dropout_rate']),
             tf.keras.layers.Dense(units=model_params['n_units']//2, activation='relu'),
             tf.keras.layers.Dense(units=model_params['n_output_probabilities'], activation='sigmoid') # Sigmoid for probability outputs
@@ -169,8 +170,8 @@ class PricePredictionTrainingAgent:
         eval_dataset = self._create_dataset(eval_data_list, batch_size=batch_size, shuffle=False)
 
         print("\n--- Starting model.fit() training ---")
-        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=8, min_lr=0.0000001)
-        stop_training = tf.keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=30, verbose=1, restore_best_weights=True, start_from_epoch=5)
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.8, patience=15, min_lr=0.0000001)
+        stop_training = tf.keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=100, verbose=1, restore_best_weights=True, start_from_epoch=5)
         history = self.model.fit( # --- Use model.fit() ---
             train_dataset,           # Training data dataset
             epochs=epochs,             # Number of epochs

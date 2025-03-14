@@ -33,7 +33,7 @@ HISTORICAL_DATA_FEATURE_ALLOWLIST = [
     # Exclude: DailyPercentChange (MaxPI30, MaxPD30, MaxDPI30) and PercentPriceChangeProbability (PPC_* columns) - these are future-looking
 ]
 
-LAG_PERIODS = [1, 2, 3] # Define lag periods in days
+LAG_PERIODS = [1, 2, 3, 5, 7, 9, 12, 15] # Define lag periods in days
 
 class DataManager:
     """

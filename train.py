@@ -88,9 +88,9 @@ if __name__ == '__main__':
 
     agent = PricePredictionTrainingAgent('AAPL', feature_count) # Using LSTM model
 
-    agent.train_model(training_windows, eval_windows, 200)
+    agent.train_model(training_windows, eval_windows, 1000)
 
     os.makedirs('saved_model', exist_ok=True)
-    agent.model.save('saved_model/model5.keras')
+    agent.model.save('saved_model/model6.keras')
 
     agent.evaluate_model(eval_windows).to_csv('simulations/predictions.csv')
