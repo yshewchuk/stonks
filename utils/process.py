@@ -25,7 +25,8 @@ class Process:
         """
         Starts a new process:
         1. Creates a numbered backup of the existing content in the output directory
-        2. Writes a metadata.json file containing the provided configuration dictionary
+        2. Removes all existing files from the output directory (after backup)
+        3. Writes a metadata.json file containing the provided configuration dictionary
            along with a human-readable timestamp to the OUTPUT_DIR
         
         Handles datetime objects by converting them to string format.
@@ -53,6 +54,21 @@ class Process:
             backup_created = Process._create_backup(output_dir)
             if backup_created:
                 print(f"✅ Backup of existing content created in {output_dir}")
+                
+                # After successful backup, clean up the output directory
+                # by removing all non-backup files and folders
+                backup_pattern = re.compile(r'backup_(\d+)$')
+                items = os.listdir(output_dir)
+                non_backup_items = [item for item in items if not backup_pattern.match(item)]
+                
+                for item in non_backup_items:
+                    item_path = os.path.join(output_dir, item)
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                
+                print(f"✅ Cleaned output directory {output_dir}")
             
             # Create a copy of the config to avoid modifying the original
             metadata = config.copy()
