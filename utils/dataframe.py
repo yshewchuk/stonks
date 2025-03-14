@@ -223,8 +223,6 @@ def truncate_recent_data(df, rows_to_remove, min_rows_required=None):
     if min_rows_required is None:
         min_rows_required = rows_to_remove + 1
     
-    print(f"DEBUG: df length: {len(df)}, rows_to_remove: {rows_to_remove}")
-    
     # Check if DataFrame has enough rows
     if len(df) <= rows_to_remove:
         print(f"⚠️ Warning: DataFrame has only {len(df)} rows, more than or equal to {rows_to_remove} to remove")

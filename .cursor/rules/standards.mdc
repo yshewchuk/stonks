@@ -6,3 +6,4 @@ alwaysApply: false
 - Scripts created to test out functionality should be added to the /tests folder
 - Do not introduce new dependencies on third party packages unless you have exhausted all other options
 - Consider the performance implications of the code you write, try to avoid redundant operations if possible (for example avoid extra copying of data if it's not necessary, or extra processing if it won't have impact). If there are assumptions we need to make about the data or process document the assumptions in comments in the code instead.
+- Prefer to adhere to existing conventions of the code to keep consistency across the codebase
