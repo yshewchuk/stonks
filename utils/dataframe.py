@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy
+import os
+from config import OUTPUT_DIR
 
 def print_dataframe_debugging_info(df, name="DataFrame"):
     """
@@ -108,3 +110,134 @@ def verify_dataframe_structure(df, expected_dtypes, ignore_extra_columns=False, 
             return False
 
     return True
+
+def write_dataframes_to_parquet(dataframes_dict, config):
+    """
+    Writes a dictionary of dataframes to parquet files in the directory
+    specified by the OUTPUT_DIR key in the config dictionary.
+    
+    Args:
+        dataframes_dict (dict): Dictionary where keys are dataframe names and values are pandas DataFrames
+        config (dict): Configuration dictionary containing at least an OUTPUT_DIR key
+        
+    Returns:
+        bool: True if all dataframes were saved successfully, False otherwise
+    """
+    if not isinstance(dataframes_dict, dict):
+        print("❌ Error: dataframes_dict must be a dictionary")
+        return False
+        
+    if not all(isinstance(df, pd.DataFrame) for df in dataframes_dict.values()):
+        print("❌ Error: All values in dataframes_dict must be pandas DataFrames")
+        return False
+        
+    if OUTPUT_DIR not in config:
+        print(f"❌ Error: config must contain an {OUTPUT_DIR} key")
+        return False
+        
+    try:
+        # Ensure the output directory exists
+        output_dir = config[OUTPUT_DIR]
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Write each dataframe to a parquet file
+        for name, df in dataframes_dict.items():
+            # Create filename for parquet
+            filename = f"{name}.parquet"
+            filepath = os.path.join(output_dir, filename)
+            
+            # Write dataframe to parquet file
+            df.to_parquet(filepath, index=True)
+            print(f"✅ DataFrame '{name}' saved to {filepath}")
+            
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error writing dataframes to parquet: {e}")
+        return False
+
+def read_parquet_files_from_directory(directory):
+    """
+    Reads all parquet files from a directory and returns them as a dictionary
+    where keys are filenames (without extension) and values are pandas DataFrames.
+    
+    Args:
+        directory (str): Path to the directory containing parquet files
+        
+    Returns:
+        dict: Dictionary of DataFrames with filenames as keys
+              Returns empty dict if directory doesn't exist or contains no parquet files
+    """
+    dataframes = {}
+    
+    if not os.path.exists(directory):
+        print(f"❌ Error: Directory not found: {directory}")
+        return dataframes
+        
+    try:
+        # Get all parquet files in the directory
+        files = [f for f in os.listdir(directory) if f.endswith('.parquet')]
+        
+        if not files:
+            print(f"⚠️ Warning: No parquet files found in {directory}")
+            return dataframes
+            
+        # Read each parquet file into a DataFrame
+        for file in files:
+            try:
+                # Extract filename without extension to use as key
+                name = os.path.splitext(file)[0]
+                filepath = os.path.join(directory, file)
+                
+                # Read the parquet file
+                df = pd.read_parquet(filepath)
+                dataframes[name] = df
+                print(f"✅ Loaded DataFrame '{name}' from {filepath}: {len(df)} rows")
+            except Exception as e:
+                print(f"❌ Error loading {file}: {e}")
+        
+        return dataframes
+        
+    except Exception as e:
+        print(f"❌ Error reading parquet files from directory: {e}")
+        return dataframes
+
+def truncate_recent_data(df, rows_to_remove, min_rows_required=None):
+    """
+    Truncates the most recent rows from a DataFrame, optionally checking
+    if the DataFrame has enough rows to perform the truncation.
+    
+    Args:
+        df (pd.DataFrame): DataFrame to truncate, assumed to be sorted by index (date)
+        rows_to_remove (int): Number of most recent rows to remove
+        min_rows_required (int, optional): Minimum rows required, defaults to rows_to_remove+1
+        
+    Returns:
+        pd.DataFrame: Truncated DataFrame, or None if the DataFrame doesn't have enough rows
+    """
+    if not isinstance(df, pd.DataFrame):
+        print("❌ Error: Input must be a pandas DataFrame")
+        return None
+        
+    # Set default for min_rows_required if not provided
+    if min_rows_required is None:
+        min_rows_required = rows_to_remove + 1
+    
+    print(f"DEBUG: df length: {len(df)}, rows_to_remove: {rows_to_remove}")
+    
+    # Check if DataFrame has enough rows
+    if len(df) <= rows_to_remove:
+        print(f"⚠️ Warning: DataFrame has only {len(df)} rows, more than or equal to {rows_to_remove} to remove")
+        return None
+    
+    if len(df) < min_rows_required:
+        print(f"⚠️ Warning: DataFrame has only {len(df)} rows, {min_rows_required} required")
+        return None
+    
+    # Sort DataFrame by index just to be sure
+    df = df.sort_index()
+    
+    # Remove the last 'rows_to_remove' rows
+    truncated_df = df.iloc[:-rows_to_remove]
+    
+    return truncated_df
