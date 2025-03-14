@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy
 import os
+import concurrent.futures
+import multiprocessing
 from config import OUTPUT_DIR
 
 def print_dataframe_debugging_info(df, name="DataFrame"):
@@ -111,14 +113,34 @@ def verify_dataframe_structure(df, expected_dtypes, ignore_extra_columns=False, 
 
     return True
 
-def write_dataframes_to_parquet(dataframes_dict, config):
+def _write_parquet_file(args):
+    """
+    Helper function to write a single DataFrame to a parquet file.
+    Used by ProcessPoolExecutor for parallel file writing.
+    
+    Args:
+        args (tuple): Tuple containing (name, df, filepath)
+        
+    Returns:
+        tuple: (name, success, error_message)
+    """
+    name, df, filepath = args
+    try:
+        df.to_parquet(filepath, index=True, compression='snappy')
+        return (name, True, None)
+    except Exception as e:
+        return (name, False, str(e))
+
+def write_dataframes_to_parquet(dataframes_dict, config, max_workers=None):
     """
     Writes a dictionary of dataframes to parquet files in the directory
     specified by the OUTPUT_DIR key in the config dictionary.
+    Uses multiprocessing for improved performance.
     
     Args:
         dataframes_dict (dict): Dictionary where keys are dataframe names and values are pandas DataFrames
         config (dict): Configuration dictionary containing at least an OUTPUT_DIR key
+        max_workers (int, optional): Maximum number of worker processes. Defaults to None (uses default ProcessPoolExecutor behavior)
         
     Returns:
         bool: True if all dataframes were saved successfully, False otherwise
@@ -135,38 +157,84 @@ def write_dataframes_to_parquet(dataframes_dict, config):
         print(f"❌ Error: config must contain an {OUTPUT_DIR} key")
         return False
         
-    current = 0
     try:
         # Ensure the output directory exists
         output_dir = config[OUTPUT_DIR]
         os.makedirs(output_dir, exist_ok=True)
         
-        # Write each dataframe to a parquet file
+        # Prepare arguments for process pool
+        tasks = []
         for name, df in dataframes_dict.items():
-            # Create filename for parquet
             filename = f"{name}.parquet"
             filepath = os.path.join(output_dir, filename)
+            tasks.append((name, df, filepath))
+        
+        # Set up progress tracking
+        total_files = len(tasks)
+        successful_writes = 0
+        
+        # Determine process pool size - default to 75% of CPU cores (min 1, max as specified)
+        if max_workers is None:
+            max_workers = max(1, min(int(multiprocessing.cpu_count() * 0.75), 8))
+        
+        print(f"ℹ️ Using {max_workers} processes for writing parquet files")
+        
+        # Use ProcessPoolExecutor for parallel writing (CPU-bound due to compression)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_write_parquet_file, task): task[0] for task in tasks}
             
-            # Write dataframe to parquet file
-            df.to_parquet(filepath, index=True, compression='snappy')
-
-            current += 1
-            if len(dataframes_dict) > 200 and current % 100 == 0:
-                print(f"✅ DataFrame '{name}' saved to {filepath}")
-            
-        return True
+            # Process results as they complete
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                name, success, error_message = future.result()
+                
+                if success:
+                    successful_writes += 1
+                    # Print status every 10 files or for the last file
+                    if total_files < 20 or (i + 1) % 10 == 0 or (i + 1) == total_files:
+                        print(f"✅ Progress: {i + 1}/{total_files} files written ({successful_writes} successful)")
+                else:
+                    print(f"❌ Error writing '{name}' to parquet: {error_message}")
+        
+        if successful_writes == total_files:
+            print(f"✅ Successfully wrote all {total_files} dataframes to parquet files")
+            return True
+        else:
+            print(f"⚠️ Warning: Only {successful_writes} out of {total_files} dataframes were successfully written")
+            return successful_writes > 0
         
     except Exception as e:
         print(f"❌ Error writing dataframes to parquet: {e}")
         return False
 
-def read_parquet_files_from_directory(directory):
+def _read_parquet_file(args):
+    """
+    Helper function to read a single parquet file.
+    Used by ProcessPoolExecutor for parallel file reading.
+    
+    Args:
+        args (tuple): Tuple containing (file, directory)
+        
+    Returns:
+        tuple: (name, dataframe, error_message)
+    """
+    file, directory = args
+    try:
+        name = os.path.splitext(file)[0]
+        filepath = os.path.join(directory, file)
+        df = pd.read_parquet(filepath)
+        return (name, df, None)
+    except Exception as e:
+        return (os.path.splitext(file)[0], None, str(e))
+
+def read_parquet_files_from_directory(directory, max_workers=None):
     """
     Reads all parquet files from a directory and returns them as a dictionary
     where keys are filenames (without extension) and values are pandas DataFrames.
+    Uses multiprocessing for improved performance.
     
     Args:
         directory (str): Path to the directory containing parquet files
+        max_workers (int, optional): Maximum number of worker processes. Defaults to None (uses system-dependent value)
         
     Returns:
         dict: Dictionary of DataFrames with filenames as keys
@@ -185,20 +253,31 @@ def read_parquet_files_from_directory(directory):
         if not files:
             print(f"⚠️ Warning: No parquet files found in {directory}")
             return dataframes
+
+        # Determine process pool size - default to 75% of CPU cores (min 1, max as specified)
+        if max_workers is None:
+            max_workers = max(1, min(int(multiprocessing.cpu_count() * 0.75), 8))
             
-        # Read each parquet file into a DataFrame
-        for file in files:
-            try:
-                # Extract filename without extension to use as key
-                name = os.path.splitext(file)[0]
-                filepath = os.path.join(directory, file)
+        print(f"ℹ️ Using {max_workers} processes for reading parquet files")
+        
+        current = 0
+            
+        # Use ProcessPoolExecutor for parallel reading (CPU-bound due to decompression)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            tasks = [(file, directory) for file in files]
+            futures = {executor.submit(_read_parquet_file, task): task[0] for task in tasks}
+            
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(futures):
+                name, df, error_message = future.result()
                 
-                # Read the parquet file
-                df = pd.read_parquet(filepath)
-                dataframes[name] = df
-                print(f"✅ Loaded DataFrame '{name}' from {filepath}: {len(df)} rows")
-            except Exception as e:
-                print(f"❌ Error loading {file}: {e}")
+                if df is not None:
+                    current += 1
+                    dataframes[name] = df
+                    if len(files) < 20 or current % 10 == 0 or current == len(files):
+                        print(f"✅ Loaded DataFrame '{name}' ({current}/{len(files)}): {len(df)} rows")
+                else:
+                    print(f"❌ Error loading {futures[future]}: {error_message}")
         
         return dataframes
         
