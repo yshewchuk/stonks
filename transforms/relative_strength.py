@@ -61,4 +61,4 @@ class RSI:
 
         df[f'RSI{self.window}'] = rsi
 
-        return df
+        return df 

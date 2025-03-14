@@ -112,4 +112,4 @@ class PercentPriceChangeProbability:
 
         df[probability_column_name] = probability_values.values # Assign numpy array to avoid index issues
 
-        return df
+        return df 

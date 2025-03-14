@@ -70,4 +70,4 @@ class MACD:
         df[f'MoACD_Signal_{self.signal_period}'] = signal_line
         df[f'MoACD_Hist_{self.fast_period}_{self.slow_period}_{self.signal_period}'] = histogram
 
-        return df
+        return df 

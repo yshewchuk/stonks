@@ -1,6 +1,7 @@
 import pandas as pd
+import numpy as np
 
-class LaggedFeatures: # NEW: LaggedFeatures class
+class LaggedFeatures:
     """
     Extends a DataFrame with lagged features for specified columns.
     """
@@ -35,11 +36,22 @@ class LaggedFeatures: # NEW: LaggedFeatures class
         """
         if not isinstance(df, pd.DataFrame):
             raise ValueError("Input must be a DataFrame.")
-
+            
+        # Create a list to store all the lagged DataFrames
+        lagged_dfs = []
+        
+        # For each period and column, create a DataFrame with the lagged values
         for period in self.periods:
             for col in self.columns_to_lag:
-                if col in df.columns: # Check if the column exists in the DataFrame
+                if col in df.columns:  # Check if the column exists in the DataFrame
                     lagged_col_name = f'{col}_Lag{period}'
-                    df[lagged_col_name] = df[col].shift(period) # Create lagged column
-
-        return df
+                    lagged_df = pd.DataFrame({lagged_col_name: df[col].shift(period)})
+                    lagged_dfs.append(lagged_df)
+        
+        # If there are lagged DataFrames, concatenate them with the original DataFrame
+        if lagged_dfs:
+            # Combine all lagged DataFrames with the original DataFrame
+            result_df = pd.concat([df] + lagged_dfs, axis=1)
+            return result_df
+        else:
+            return df 

@@ -54,4 +54,4 @@ class MovingAverage:
         # --- Extend DataFrame using .loc for assignment to avoid SettingWithCopyWarning ---
         df.loc[:, self.ma_column_name] = df['Close'].rolling(window=self.window).mean().shift(1) # Add MA column to DataFrame
 
-        return df
+        return df 

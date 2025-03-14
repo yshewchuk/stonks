@@ -53,4 +53,4 @@ class RollingHiLo:
         df[f'Hi{self.window}'] = df['Close'].rolling(window=self.window).max().shift(1) # Add Hi column to DataFrame
         df[f'Lo{self.window}'] = df['Close'].rolling(window=self.window).min().shift(1) # Add Lo column to DataFrame
 
-        return df
+        return df 
