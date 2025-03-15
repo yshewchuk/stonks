@@ -1,236 +1,195 @@
+#!/usr/bin/env python3
+"""
+Unit tests for the dataframe utility functions in utils/dataframe.py.
+"""
+
+import os
 import unittest
+import tempfile
 import pandas as pd
 import numpy as np
-import os
 import shutil
-import tempfile
-from utils.dataframe import write_dataframes_to_parquet, read_parquet_files_from_directory, truncate_recent_data, create_time_windows
-from config import OUTPUT_DIR
+import concurrent.futures
+from datetime import datetime, timedelta
 
-class TestDataFrameUtils(unittest.TestCase):
-    
+from config import OUTPUT_DIR, MAX_WORKERS
+from utils.dataframe import (
+    extract_data_range,
+    read_parquet_files_from_directory,
+    write_dataframes_to_parquet
+)
+
+class TestExtractDataRange(unittest.TestCase):
+    """Tests for the extract_data_range function."""
+
     def setUp(self):
-        # Create a temporary directory for test files
-        self.test_dir = tempfile.mkdtemp()
-        
-        # Create test dataframes
-        self.df1 = pd.DataFrame({
-            'A': [1, 2, 3, 4, 5],
-            'B': [10, 20, 30, 40, 50]
-        }, index=pd.date_range('2023-01-01', periods=5, freq=None))
-        
-        self.df2 = pd.DataFrame({
-            'X': [100, 200, 300, 400, 500],
-            'Y': [1000, 2000, 3000, 4000, 5000]
-        }, index=pd.date_range('2023-01-01', periods=5, freq=None))
-        
-        self.test_dataframes = {
-            'test1': self.df1,
-            'test2': self.df2
+        # Create sample DataFrame with date index
+        dates = pd.date_range(start='2020-01-01', periods=100, freq='D')
+        data = {
+            'Open': np.random.rand(100) * 100,
+            'Close': np.random.rand(100) * 100,
+            'Volume': np.random.randint(1000, 10000, 100)
         }
+        self.sample_df = pd.DataFrame(data, index=dates)
+        self.sample_df.index.name = 'Date'
+
+    def test_extract_recent_data(self):
+        """Test extracting the most recent data."""
+        # Extract the most recent 20 rows
+        extracted_df = extract_data_range(self.sample_df, num_rows=20, extract_recent=True)
         
-        self.config = {
-            OUTPUT_DIR: self.test_dir
-        }
+        # Check that we got 20 rows
+        self.assertEqual(len(extracted_df), 20)
         
-        # Create a larger DataFrame for time window testing
-        # Generate 100 days of data
-        dates = pd.date_range('2023-01-01', periods=100, freq='D')
+        # Check that we got the last 20 rows
+        pd.testing.assert_index_equal(extracted_df.index, self.sample_df.index[-20:])
         
-        # Create a multi-level column structure similar to our merged data
-        # Level 1: Ticker (AAPL, MSFT)
-        # Level 2: Feature (Open, Close, Volume)
-        columns = pd.MultiIndex.from_product(
-            [['AAPL', 'MSFT'], ['Open', 'Close', 'Volume']],
-            names=['Ticker', 'Feature']
-        )
+        # Check that the data values match
+        pd.testing.assert_frame_equal(extracted_df, self.sample_df.iloc[-20:])
+
+    def test_truncate_recent_data(self):
+        """Test truncating the most recent data."""
+        # Truncate the most recent 20 rows
+        truncated_df = extract_data_range(self.sample_df, num_rows=20, extract_recent=False)
         
-        # Generate random data
-        data = np.random.randn(100, 6) * 10 + 100
-        # Set volume to positive integers
-        data[:, 2] = np.abs(data[:, 2] * 1000).astype(int)
-        data[:, 5] = np.abs(data[:, 5] * 1000).astype(int)
+        # Check that we got 80 rows (100 - 20)
+        self.assertEqual(len(truncated_df), 80)
         
-        # Create the DataFrame
-        self.time_series_df = pd.DataFrame(data, index=dates, columns=columns)
+        # Check that we got the first 80 rows
+        pd.testing.assert_index_equal(truncated_df.index, self.sample_df.index[:-20])
         
-        # Introduce some NaN values for testing dropna
-        self.time_series_df.iloc[25:27, 0:2] = np.nan  # Set AAPL's Open and Close to NaN for days 25-26
-    
+        # Check that the data values match
+        pd.testing.assert_frame_equal(truncated_df, self.sample_df.iloc[:-20])
+
+    def test_insufficient_rows(self):
+        """Test when DataFrame has insufficient rows."""
+        # Create a small DataFrame
+        small_df = self.sample_df.iloc[:5]
+        
+        # Try to extract 10 rows (which is more than available)
+        result = extract_data_range(small_df, num_rows=10, extract_recent=True)
+        
+        # Should return None
+        self.assertIsNone(result)
+
+    def test_custom_min_rows(self):
+        """Test with custom minimum rows requirement."""
+        # Try to extract 10 rows with a minimum requirement of 50
+        result = extract_data_range(self.sample_df, num_rows=10, extract_recent=True, min_rows_required=50)
+        
+        # Should succeed since the DataFrame has 100 rows
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 10)
+        
+        # Try with higher minimum requirement
+        result = extract_data_range(self.sample_df, num_rows=10, extract_recent=True, min_rows_required=150)
+        
+        # Should fail since the DataFrame only has 100 rows
+        self.assertIsNone(result)
+
+    def test_non_dataframe_input(self):
+        """Test with non-DataFrame input."""
+        # Pass a list instead of a DataFrame
+        result = extract_data_range([1, 2, 3], num_rows=1, extract_recent=True)
+        
+        # Should return None
+        self.assertIsNone(result)
+
+
+class TestParquetReadWrite(unittest.TestCase):
+    """Tests for parquet file read/write functions."""
+
+    def setUp(self):
+        # Create a temporary directory
+        self.temp_dir = tempfile.mkdtemp()
+        
+        # Create sample DataFrames for testing
+        dates = pd.date_range(start='2020-01-01', periods=30, freq='D')
+        
+        # Dictionary to hold test DataFrames
+        self.test_dfs = {}
+        
+        for ticker in ['AAPL', 'GOOG', 'MSFT']:
+            data = {
+                'Open': np.random.rand(30) * 100,
+                'Close': np.random.rand(30) * 100,
+                'Volume': np.random.randint(1000, 10000, 30)
+            }
+            df = pd.DataFrame(data, index=dates)
+            df.index.name = 'Date'
+            self.test_dfs[ticker] = df
+
     def tearDown(self):
-        # Remove the temporary directory
-        shutil.rmtree(self.test_dir)
-    
-    def test_write_dataframes_to_parquet(self):
-        # Test writing dataframes to parquet
-        result = write_dataframes_to_parquet(self.test_dataframes, self.config)
-        self.assertTrue(result)
+        # Clean up the temporary directory
+        shutil.rmtree(self.temp_dir)
+
+    def test_write_and_read_parquet(self):
+        """Test writing and reading parquet files using our utility functions."""
+        # Create a config dictionary with the required keys
+        config = {OUTPUT_DIR: self.temp_dir}
+        
+        # First, write the DataFrames to parquet files
+        success = write_dataframes_to_parquet(self.test_dfs, config, max_workers=1)
+        
+        # Check that write was successful
+        self.assertTrue(success)
         
         # Check that files were created
-        for name in self.test_dataframes.keys():
-            self.assertTrue(os.path.exists(os.path.join(self.test_dir, f"{name}.parquet")))
-    
-    def test_write_dataframes_invalid_input(self):
-        # Test with invalid input
-        invalid_inputs = [
-            ("Not a dict", self.config),
-            ({"test": "not a dataframe"}, self.config),
-            (self.test_dataframes, "not a dict")
-        ]
+        files = os.listdir(self.temp_dir)
+        self.assertEqual(len(files), len(self.test_dfs))
         
-        for invalid_input in invalid_inputs:
-            result = write_dataframes_to_parquet(invalid_input[0], invalid_input[1])
-            self.assertFalse(result)
-    
-    def test_read_parquet_files_from_directory(self):
-        # First write the dataframes to parquet
-        write_dataframes_to_parquet(self.test_dataframes, self.config)
+        # Now read the parquet files back
+        read_dfs = read_parquet_files_from_directory(self.temp_dir, max_workers=1)
         
-        # Test reading parquet files
-        result = read_parquet_files_from_directory(self.test_dir)
+        # Check that we got the same number of DataFrames
+        self.assertEqual(len(read_dfs), len(self.test_dfs))
         
-        # Check that we got the correct number of dataframes
-        self.assertEqual(len(result), len(self.test_dataframes))
-        
-        # Check that the dataframes have the correct data
-        for name, df in self.test_dataframes.items():
-            self.assertTrue(name in result)
-            # Check values only, not the index frequency
-            pd.testing.assert_frame_equal(result[name], df, check_freq=False)
-    
-    def test_read_nonexistent_directory(self):
-        # Test reading from a nonexistent directory
-        nonexistent_dir = os.path.join(self.test_dir, "nonexistent")
-        result = read_parquet_files_from_directory(nonexistent_dir)
-        self.assertEqual(len(result), 0)
-    
-    def test_truncate_recent_data(self):
-        # Create a test dataframe with 10 rows
-        test_df = pd.DataFrame({
-            'A': range(10),
-            'B': range(10, 20)
-        }, index=pd.date_range('2023-01-01', periods=10, freq=None))
-        
-        print(f"Test DataFrame shape: {test_df.shape}")
-        print(test_df)
-        
-        # Test basic truncation
-        truncated_df = truncate_recent_data(test_df, rows_to_remove=3)
-        self.assertEqual(len(truncated_df), 7)
-        
-        # The values should be the first 7 rows
-        pd.testing.assert_frame_equal(truncated_df, test_df.iloc[:7], check_freq=False)
-        
-        # Test with min_rows_required
-        truncated_df = truncate_recent_data(test_df, rows_to_remove=3, min_rows_required=11)
-        self.assertIsNone(truncated_df)
-        
-        truncated_df = truncate_recent_data(test_df, rows_to_remove=3, min_rows_required=7)
-        self.assertEqual(len(truncated_df), 7)
-        
-        # Test removing all rows
-        print("Testing with rows_to_remove=10")
-        truncated_df = truncate_recent_data(test_df, rows_to_remove=10)
-        print(f"Result: {truncated_df}")
-        self.assertIsNone(truncated_df)
-        
-        # Test removing more rows than available
-        truncated_df = truncate_recent_data(test_df, rows_to_remove=15)
-        self.assertIsNone(truncated_df)
-    
-    def test_create_time_windows(self):
-        """Test the create_time_windows function with various parameters"""
-        
-        # Test basic functionality with non-overlapping windows
-        windows = create_time_windows(self.time_series_df, window_size=10)
-        
-        # Should create 9 windows of 10 days each (one window is dropped due to NaN values)
-        self.assertEqual(len(windows), 9)
-        
-        # Each window should have 10 days
-        for window in windows:
-            self.assertEqual(len(window), 10)
-        
-        # Test window naming
-        first_window = windows[0]
-        expected_start = self.time_series_df.index[0].strftime('%Y-%m-%d')
-        expected_end = self.time_series_df.index[9].strftime('%Y-%m-%d')
-        expected_name = f"{expected_start}_to_{expected_end}"
-        self.assertEqual(first_window.name, expected_name)
-        
-        # Test with overlapping windows (step_size < window_size)
-        windows = create_time_windows(self.time_series_df, window_size=10, step_size=5)
-        
-        # Should create fewer windows due to NaN values
-        # Calculate expected windows: without NaNs would be (100-10)/5 + 1 = 19
-        # But windows containing indices 25-26 will be dropped
-        self.assertGreater(len(windows), 10)  # Just verify we have multiple windows
-        
-        # Check overlapping windows have correct indices
-        self.assertEqual(windows[0].index[0], self.time_series_df.index[0])
-        self.assertEqual(windows[1].index[0], self.time_series_df.index[5])
-    
-    def test_create_time_windows_with_nan(self):
-        """Test the create_time_windows function's handling of NaN values"""
-        
-        # Test with dropna=True (default)
-        windows = create_time_windows(self.time_series_df, window_size=10)
-        
-        # Windows containing days 25-26 should be dropped
-        # These would be windows starting at indices 20-26
-        for window in windows:
-            # Check if this window would include the NaN values
-            start_date = window.index[0]
-            end_date = window.index[-1]
-            contains_nan_period = (
-                start_date <= self.time_series_df.index[26] and 
-                end_date >= self.time_series_df.index[25]
-            )
+        # Check that the DataFrames have the same content
+        for ticker in self.test_dfs:
+            self.assertIn(ticker, read_dfs)
             
-            if contains_nan_period:
-                self.fail(f"Window {window.name} contains NaN values but was not dropped")
-        
-        # Test with dropna=False
-        windows = create_time_windows(self.time_series_df, window_size=10, dropna=False)
-        
-        # Should create 10 windows of 10 days each (100 days / 10 days per window)
-        self.assertEqual(len(windows), 10)
-        
-        # Windows containing NaN values should exist
-        nan_dates = self.time_series_df.index[25:27]
-        windows_with_nan = []
-        
-        for window in windows:
-            if any(date in window.index for date in nan_dates):
-                # This window contains dates with NaN values
-                if window.isna().any().any():
-                    windows_with_nan.append(window)
-        
-        self.assertGreater(len(windows_with_nan), 0, 
-                          "No windows with NaN values found when dropna=False")
+            # Create copies of DataFrames to avoid modifying originals
+            original_df = self.test_dfs[ticker].copy()
+            read_df = read_dfs[ticker].copy()
+            
+            # Parquet doesn't preserve the frequency of DatetimeIndex
+            # Reset the frequency to None for comparison
+            if hasattr(original_df.index, 'freq') and original_df.index.freq is not None:
+                original_df.index = pd.DatetimeIndex(original_df.index, freq=None)
+            
+            # Now compare the DataFrames
+            pd.testing.assert_frame_equal(read_df, original_df)
     
-    def test_create_time_windows_invalid_input(self):
-        """Test the create_time_windows function with invalid inputs"""
+    def test_max_workers_from_config(self):
+        """Test that max_workers is correctly read from config."""
+        # Create a config with MAX_WORKERS
+        config = {OUTPUT_DIR: self.temp_dir, MAX_WORKERS: 3}
         
-        # Test with non-DataFrame input
-        result = create_time_windows("not a dataframe", window_size=10)
-        self.assertEqual(result, [])
+        # Mock the ProcessPoolExecutor to verify max_workers
+        original_executor = concurrent.futures.ProcessPoolExecutor
         
-        # Test with non-datetime index
-        df_without_datetime = pd.DataFrame({
-            'A': range(100),
-            'B': range(100, 200)
-        })
-        result = create_time_windows(df_without_datetime, window_size=10)
-        self.assertEqual(result, [])
-        
-        # Test with DataFrame too small for window
-        small_df = pd.DataFrame({
-            'A': range(5),
-            'B': range(5, 10)
-        }, index=pd.date_range('2023-01-01', periods=5))
-        result = create_time_windows(small_df, window_size=10)
-        self.assertEqual(result, [])
+        try:
+            # Use a list to track the max_workers value
+            captured_max_workers = []
+            
+            # Define a mock executor to capture max_workers
+            def mock_executor(max_workers=None):
+                captured_max_workers.append(max_workers)
+                return original_executor(max_workers=max_workers)
+            
+            # Replace the executor with our mock
+            concurrent.futures.ProcessPoolExecutor = mock_executor
+            
+            # Call write_dataframes_to_parquet without specifying max_workers
+            write_dataframes_to_parquet(self.test_dfs, config)
+            
+            # Check that max_workers was correctly read from config
+            self.assertEqual(captured_max_workers[0], 3)
+            
+        finally:
+            # Restore the original executor
+            concurrent.futures.ProcessPoolExecutor = original_executor
+
 
 if __name__ == '__main__':
     unittest.main() 

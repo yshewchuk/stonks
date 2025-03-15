@@ -3,7 +3,7 @@ import numpy
 import os
 import concurrent.futures
 import multiprocessing
-from config import OUTPUT_DIR
+from config import OUTPUT_DIR, MAX_WORKERS
 
 def print_dataframe_debugging_info(df, name="DataFrame"):
     """
@@ -140,7 +140,7 @@ def write_dataframes_to_parquet(dataframes_dict, config, max_workers=None):
     Args:
         dataframes_dict (dict): Dictionary where keys are dataframe names and values are pandas DataFrames
         config (dict): Configuration dictionary containing at least an OUTPUT_DIR key
-        max_workers (int, optional): Maximum number of worker processes. Defaults to None (uses default ProcessPoolExecutor behavior)
+        max_workers (int, optional): Maximum number of worker processes. If None, uses config[MAX_WORKERS]
         
     Returns:
         bool: True if all dataframes were saved successfully, False otherwise
@@ -173,9 +173,12 @@ def write_dataframes_to_parquet(dataframes_dict, config, max_workers=None):
         total_files = len(tasks)
         successful_writes = 0
         
-        # Determine process pool size - default to 75% of CPU cores (min 1, max as specified)
+        # Determine process pool size - use max_workers if provided, otherwise get from config
         if max_workers is None:
-            max_workers = max(1, min(int(multiprocessing.cpu_count() * 0.75), 8))
+            if MAX_WORKERS in config:
+                max_workers = config[MAX_WORKERS]
+            else:
+                max_workers = max(1, min(int(multiprocessing.cpu_count() * 0.75), 8))
         
         print(f"ℹ️ Using {max_workers} processes for writing parquet files")
         
@@ -234,7 +237,7 @@ def read_parquet_files_from_directory(directory, max_workers=None):
     
     Args:
         directory (str): Path to the directory containing parquet files
-        max_workers (int, optional): Maximum number of worker processes. Defaults to None (uses system-dependent value)
+        max_workers (int, optional): Maximum number of worker processes. If None, uses CONFIG[MAX_WORKERS]
         
     Returns:
         dict: Dictionary of DataFrames with filenames as keys
@@ -254,7 +257,9 @@ def read_parquet_files_from_directory(directory, max_workers=None):
             print(f"⚠️ Warning: No parquet files found in {directory}")
             return dataframes
 
-        # Determine process pool size - default to 75% of CPU cores (min 1, max as specified)
+        # Determine process pool size - use max_workers if provided, otherwise default
+        # Note: We can't directly access CONFIG here since it's not passed in,
+        # but scripts importing this function can still get max_workers from CONFIG
         if max_workers is None:
             max_workers = max(1, min(int(multiprocessing.cpu_count() * 0.75), 8))
             
@@ -285,18 +290,19 @@ def read_parquet_files_from_directory(directory, max_workers=None):
         print(f"❌ Error reading parquet files from directory: {e}")
         return dataframes
 
-def truncate_recent_data(df, rows_to_remove, min_rows_required=None):
+def extract_data_range(df, num_rows, extract_recent=True, min_rows_required=None):
     """
-    Truncates the most recent rows from a DataFrame, optionally checking
-    if the DataFrame has enough rows to perform the truncation.
+    Extracts or truncates a range of rows from a DataFrame.
     
     Args:
-        df (pd.DataFrame): DataFrame to truncate, assumed to be sorted by index (date)
-        rows_to_remove (int): Number of most recent rows to remove
-        min_rows_required (int, optional): Minimum rows required, defaults to rows_to_remove+1
+        df (pd.DataFrame): DataFrame to process, assumed to be sorted by index (date)
+        num_rows (int): Number of rows to extract or truncate
+        extract_recent (bool): If True, extracts the last num_rows rows (evaluation data)
+                              If False, truncates the last num_rows rows (training data)
+        min_rows_required (int, optional): Minimum rows required in df, defaults to num_rows+1
         
     Returns:
-        pd.DataFrame: Truncated DataFrame, or None if the DataFrame doesn't have enough rows
+        pd.DataFrame: Processed DataFrame, or None if the DataFrame doesn't have enough rows
     """
     if not isinstance(df, pd.DataFrame):
         print("❌ Error: Input must be a pandas DataFrame")
@@ -304,13 +310,9 @@ def truncate_recent_data(df, rows_to_remove, min_rows_required=None):
         
     # Set default for min_rows_required if not provided
     if min_rows_required is None:
-        min_rows_required = rows_to_remove + 1
+        min_rows_required = num_rows + 1
     
     # Check if DataFrame has enough rows
-    if len(df) <= rows_to_remove:
-        print(f"⚠️ Warning: DataFrame has only {len(df)} rows, more than or equal to {rows_to_remove} to remove")
-        return None
-    
     if len(df) < min_rows_required:
         print(f"⚠️ Warning: DataFrame has only {len(df)} rows, {min_rows_required} required")
         return None
@@ -318,10 +320,16 @@ def truncate_recent_data(df, rows_to_remove, min_rows_required=None):
     # Sort DataFrame by index just to be sure
     df = df.sort_index()
     
-    # Remove the last 'rows_to_remove' rows
-    truncated_df = df.iloc[:-rows_to_remove]
+    if extract_recent:
+        # Extract the last num_rows rows (for evaluation data)
+        processed_df = df.iloc[-num_rows:].copy()
+        print(f"ℹ️ Extracted {len(processed_df)} recent rows from DataFrame with {len(df)} rows")
+    else:
+        # Remove the last num_rows rows (for training data)
+        processed_df = df.iloc[:-num_rows].copy()
+        print(f"ℹ️ Truncated {num_rows} recent rows from DataFrame with {len(df)} rows")
     
-    return truncated_df
+    return processed_df
 
 def create_time_windows(df, window_size, step_size=None, dropna=True):
     """

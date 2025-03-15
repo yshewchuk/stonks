@@ -9,6 +9,8 @@ from transforms.macd import MACD
 from transforms.percent_price_change_probability import PercentPriceChangeProbability
 from transforms.lagged_features import LaggedFeatures
 
+from config import START_DAYS_FUTURE, END_DAYS_FUTURE, PERCENT_CHANGE_BOUNDS
+
 class RawStockPreProcessor:
     """
     Pre-processes raw stock data by applying various transformations.
@@ -75,9 +77,9 @@ class RawStockPreProcessor:
         # Add Percent Price Change Probability transformers
         if self.ppc_configs:
             for config in self.ppc_configs:
-                start_days = config.get('start_days_future')
-                end_days = config.get('end_days_future')
-                bounds = config.get('percent_change_bounds', [])
+                start_days = config.get(START_DAYS_FUTURE)
+                end_days = config.get(END_DAYS_FUTURE)
+                bounds = config.get(PERCENT_CHANGE_BOUNDS, [])
                 
                 # Convert bounds to min/max pairs
                 if bounds and len(bounds) > 1:
