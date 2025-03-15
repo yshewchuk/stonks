@@ -7,8 +7,7 @@ This script:
 2. Scales each window using HistoricalDataScaler
 3. Saves the scaled windows to the output directory
 
-Uses multiprocessing for all CPU-intensive operations (reading, scaling, and writing)
-to maximize performance and utilize all available CPU cores.
+Uses multiprocessing for all CPU-intensive operations to maximize performance.
 """
 
 import os
@@ -20,29 +19,22 @@ from datetime import datetime
 
 import pandas as pd
 
-from config import CONFIG, OUTPUT_DIR, INPUT_DIR
+from config import (
+    CONFIG, OUTPUT_DIR, INPUT_DIR, MAX_WORKERS,
+    PRICE_COLUMN_TAGS, VOLUME_PREFIX, RSI_PREFIX, MACD_PREFIX, SCALING_CONFIG
+)
 from transforms.historical_data_scaler import HistoricalDataScaler
 from utils.dataframe import read_parquet_files_from_directory, write_dataframes_to_parquet
 from utils.process import Process
 
-PRICE_COLUMN_TAGS = 'price_column_tags'
-VOLUME_PREFIX = 'volume_prefix'
-RSI_PREFIX = 'rsi_prefix'
-MACD_PREFIX = 'macd_prefix'
-MAX_WORKERS = 'max_workers'
-# Configuration
-CONFIG = CONFIG | {
+# Configuration - use the shared scaling parameters
+CONFIG = CONFIG | SCALING_CONFIG | {
     INPUT_DIR: "data/5_training_time_windows",
     OUTPUT_DIR: "data/6_training_scale_data",
-    PRICE_COLUMN_TAGS: ['Open', 'High', 'Low', 'Close', 'MA', 'Hi', 'Lo'],
-    VOLUME_PREFIX: 'Volume',
-    RSI_PREFIX: 'RSI',
-    MACD_PREFIX: 'MoACD',
-    MAX_WORKERS: min(8, max(multiprocessing.cpu_count() - 1, 1)),  # Use CPU count as a guide
     "description": "Scaled time windows data for model training"
 }
 
-def _scale_window(args):
+def _scale_data(args):
     """
     Helper function to scale a single window.
     Used by ProcessPoolExecutor for parallel scaling.
@@ -72,20 +64,32 @@ def _scale_window(args):
         return (window_name, None, str(e))
 
 def main():
-    """Main function to run the scaling process."""
+    """Main function to run the training data scaling process."""
     start_time = time.time()
     
     # Initialize the process
-    print(f"🚀 Starting scaling process: {CONFIG[INPUT_DIR]} → {CONFIG[OUTPUT_DIR]}")
+    print(f"🚀 Starting training data scaling: {CONFIG[INPUT_DIR]} → {CONFIG[OUTPUT_DIR]}")
     Process.start_process(CONFIG)
     
     # Display processor configuration
     print(f"ℹ️ System has {multiprocessing.cpu_count()} CPU cores available")
-    print(f"ℹ️ Using up to {CONFIG[MAX_WORKERS]} worker processes for scaling")
+    print(f"ℹ️ Using up to {CONFIG[MAX_WORKERS]} worker processes")
+    
+    # Get scaling parameters from config
+    price_column_tags = CONFIG[PRICE_COLUMN_TAGS]
+    volume_prefix = CONFIG[VOLUME_PREFIX]
+    rsi_prefix = CONFIG[RSI_PREFIX]
+    macd_prefix = CONFIG[MACD_PREFIX]
+    
+    print(f"ℹ️ Using scaling configuration:")
+    print(f"  - Price column tags: {price_column_tags}")
+    print(f"  - Volume prefix: {volume_prefix}")
+    print(f"  - RSI prefix: {rsi_prefix}")
+    print(f"  - MACD prefix: {macd_prefix}")
     
     # Load time windows from input directory using multiprocessing
     print(f"🔍 Loading time windows from {CONFIG[INPUT_DIR]} (multiprocessing)")
-    windows_dict = read_parquet_files_from_directory(CONFIG[INPUT_DIR], max_workers=CONFIG[MAX_WORKERS])
+    windows_dict = read_parquet_files_from_directory(CONFIG[INPUT_DIR])
     
     if not windows_dict:
         print(f"❌ Error: No time windows found in {CONFIG[INPUT_DIR]}")
@@ -99,18 +103,16 @@ def main():
     scaled_windows = {}
     total_windows = len(windows_dict)
     
-    # Prepare tasks for the process pool - don't pass the scaler directly
-    # Instead pass the configuration parameters and create a scaler in each process
+    # Prepare tasks for the process pool
     tasks = [
         (window_name, window_df, 
-         CONFIG[PRICE_COLUMN_TAGS], CONFIG[VOLUME_PREFIX], CONFIG[RSI_PREFIX], CONFIG[MACD_PREFIX]) 
+         price_column_tags, volume_prefix, rsi_prefix, macd_prefix) 
         for window_name, window_df in windows_dict.items()
     ]
     
-    # Use ProcessPoolExecutor for true parallel scaling
-    # This bypasses the GIL and utilizes multiple CPU cores efficiently
+    # Use ProcessPoolExecutor for parallel scaling
     with concurrent.futures.ProcessPoolExecutor(max_workers=CONFIG[MAX_WORKERS]) as executor:
-        futures = {executor.submit(_scale_window, task): task[0] for task in tasks}
+        futures = {executor.submit(_scale_data, task): task[0] for task in tasks}
         
         # Process results as they complete with progress tracking
         completed = 0
@@ -131,7 +133,7 @@ def main():
     
     # Save scaled windows using multiprocessing
     print(f"💾 Saving scaled windows to {CONFIG[OUTPUT_DIR]} (multiprocessing)...")
-    success = write_dataframes_to_parquet(scaled_windows, CONFIG, max_workers=CONFIG[MAX_WORKERS])
+    success = write_dataframes_to_parquet(scaled_windows, CONFIG)
     
     save_time = time.time()
     
@@ -145,10 +147,18 @@ def main():
             "volume_scaling": "min-max scaling within window",
             "rsi_scaling": "fixed range scaling (0-100)",
             "macd_scaling": "min-max scaling within window",
-            "total_windows": len(scaled_windows),
+            "total_windows_scaled": len(scaled_windows),
+            "original_windows": len(windows_dict),
+            "failed_windows": len(windows_dict) - len(scaled_windows),
+            "multiprocessing_used": True,
             "workers_used": CONFIG[MAX_WORKERS],
             "cpu_cores_available": multiprocessing.cpu_count(),
-            "multiprocessing_used": True,
+            "scaling_configuration": {
+                "price_column_tags": price_column_tags,
+                "volume_prefix": volume_prefix,
+                "rsi_prefix": rsi_prefix,
+                "macd_prefix": macd_prefix
+            },
             "processing_time_seconds": {
                 "loading": round(load_time - start_time, 2),
                 "scaling": round(scale_time - load_time, 2),

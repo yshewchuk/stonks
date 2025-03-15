@@ -1,84 +1,122 @@
+#!/usr/bin/env python3
 """
-ETL - Process Script: Create 60-day time windows from merged historical data
+Script to split merged training data into time windows.
+
+This script:
+1. Loads the merged training data from step 4
+2. Splits the data into fixed-length time windows
+3. Saves each time window as a separate file
+
+Uses multiprocessing for all operations to maximize performance.
 """
+
+import os
+import json
+import time
+import multiprocessing
+from datetime import datetime
 
 import pandas as pd
-import os
-from pathlib import Path
-from config import CONFIG, OUTPUT_DIR, INPUT_DIR
+
+from config import (
+    CONFIG, OUTPUT_DIR, INPUT_DIR, MAX_WORKERS, TIME_WINDOW_CONFIG, 
+    WINDOW_SIZE, STEP_SIZE, DROP_WINDOWS_WITH_NA
+)
+from utils.dataframe import (
+    read_parquet_files_from_directory, 
+    write_dataframes_to_parquet, 
+    create_time_windows
+)
 from utils.process import Process
-from utils.dataframe import read_parquet_files_from_directory, write_dataframes_to_parquet, create_time_windows
 
-WINDOW_SIZE = 'window_size'
-STEP_SIZE = 'step_size'
-DROP_WINDOWS_WITH_NA = 'drop_windows_with_na'
-
-# Configure input and output directories
-CONFIG = CONFIG | {
+# Configuration
+CONFIG = CONFIG | TIME_WINDOW_CONFIG | {
     INPUT_DIR: "data/4_training_merge_historical",
     OUTPUT_DIR: "data/5_training_time_windows",
-    # Configuration for time windows
-    WINDOW_SIZE: 60,           # 60-day windows
-    STEP_SIZE: 1,             # Slide by 1 day for each new window
-    DROP_WINDOWS_WITH_NA: True # Drop windows containing any NaN values
+    "description": f"Training data split into {TIME_WINDOW_CONFIG[WINDOW_SIZE]}-day time windows"
 }
 
-# Start the process and write metadata
-Process.start_process(CONFIG)
-
-print(f"🔍 Loading merged historical data from {CONFIG[INPUT_DIR]}")
-
-# Read merged historical data
-merged_data = read_parquet_files_from_directory(CONFIG[INPUT_DIR])
-
-if not merged_data or "merged_historical" not in merged_data:
-    print("❌ Merged historical data not found")
-    exit(1)
-
-# Extract the merged DataFrame
-merged_df = merged_data["merged_historical"]
-print(f"✅ Loaded merged historical data: {merged_df.shape}")
-
-# Generate time windows
-print(f"🔄 Creating {CONFIG[WINDOW_SIZE]}-day time windows...")
-
-windows = create_time_windows(
-    merged_df, 
-    window_size=CONFIG[WINDOW_SIZE],
-    step_size=CONFIG[STEP_SIZE],
-    dropna=CONFIG[DROP_WINDOWS_WITH_NA]
-)
-
-if not windows:
-    print("❌ No time windows could be created")
-    exit(1)
-
-print(f"✅ Created {len(windows)} time windows")
-
-# Prepare windows for saving
-windows_dict = {f"window_{i+1}_{window.name}": window for i, window in enumerate(windows)}
-
-# Save the time windows
-print(f"💾 Saving time windows to {CONFIG[OUTPUT_DIR]}...")
-success = write_dataframes_to_parquet(windows_dict, CONFIG)
-
-if success:
-    print(f"✅ Saved {len(windows_dict)} time windows to {CONFIG[OUTPUT_DIR]}")
+def main():
+    """Main function to run the training data time windowing process."""
+    start_time = time.time()
     
-    # Print summary
-    print("\n📊 Time Windows Summary:")
-    print(f"Total windows: {len(windows)}")
-    print(f"Window size: {CONFIG[WINDOW_SIZE]} days")
-    print(f"Step size: {CONFIG[STEP_SIZE]} days")
+    # Initialize the process
+    print(f"🚀 Starting training data time windowing: {CONFIG[INPUT_DIR]} → {CONFIG[OUTPUT_DIR]}")
+    Process.start_process(CONFIG)
     
-    # Summarize a sample window
-    if windows:
-        sample_window = windows[0]
-        print(f"\n📈 Sample Window ({sample_window.name}):")
-        print(f"Shape: {sample_window.shape}")
-        print(f"Date range: {sample_window.index[0]} to {sample_window.index[-1]}")
-        print(f"Tickers: {len(sample_window.columns.levels[0])}")
-        print(f"Features per ticker: {len(sample_window.columns.levels[1])}")
-else:
-    print("❌ Failed to save time windows")
-    exit(1) 
+    # Display processor configuration
+    print(f"ℹ️ System has {multiprocessing.cpu_count()} CPU cores available")
+    print(f"ℹ️ Using up to {CONFIG[MAX_WORKERS]} worker processes")
+    print(f"ℹ️ Creating {CONFIG[WINDOW_SIZE]}-day time windows")
+    
+    # Load merged training data
+    print(f"🔍 Loading merged training data from {CONFIG[INPUT_DIR]} (multiprocessing)")
+    data_dict = read_parquet_files_from_directory(CONFIG[INPUT_DIR])
+    
+    if not data_dict or "merged_historical" not in data_dict:
+        print(f"❌ Error: No merged training data found in {CONFIG[INPUT_DIR]}")
+        return
+    
+    # Get the merged dataframe
+    merged_df = data_dict["merged_historical"]
+    
+    load_time = time.time()
+    print(f"✅ Loaded merged training data: {merged_df.shape} in {load_time - start_time:.2f} seconds")
+    
+    # Create time windows
+    print(f"🔄 Creating {CONFIG[WINDOW_SIZE]}-day time windows...")
+    windows = create_time_windows(merged_df, window_size=CONFIG[WINDOW_SIZE], step_size=CONFIG[STEP_SIZE], dropna=CONFIG[DROP_WINDOWS_WITH_NA])
+    
+    window_time = time.time()
+    print(f"✅ Created {len(windows)} time windows in {window_time - load_time:.2f} seconds")
+    
+    if not windows:
+        print(f"❌ Error: Failed to create time windows or no windows were created")
+        return
+    
+    # Create a dictionary of window DataFrames
+    window_dfs = {window.name: window for window in windows}
+    
+    # Save time windows using multiprocessing
+    print(f"💾 Saving {len(window_dfs)} time windows to {CONFIG[OUTPUT_DIR]} (multiprocessing)...")
+    success = write_dataframes_to_parquet(window_dfs, CONFIG)
+    
+    save_time = time.time()
+    
+    if success:
+        print(f"✅ Successfully saved {len(window_dfs)} time windows to {CONFIG[OUTPUT_DIR]} in {save_time - window_time:.2f} seconds")
+        
+        # Calculate how many tickers are in each window
+        tickers_per_window = len(merged_df.columns.get_level_values(0).unique())
+        
+        # Save additional metadata
+        metadata_path = os.path.join(CONFIG[OUTPUT_DIR], 'window_info.json')
+        window_info = {
+            "window_size_days": CONFIG[WINDOW_SIZE],
+            "total_windows": len(window_dfs),
+            "step_size": CONFIG[STEP_SIZE], 
+            "tickers_per_window": tickers_per_window,
+            "features_per_ticker": len(merged_df.columns.get_level_values(1).unique()),
+            "multiprocessing_used": True,
+            "workers_used": CONFIG[MAX_WORKERS],
+            "cpu_cores_available": multiprocessing.cpu_count(),
+            "window_date_ranges": {window: windows[i].index[0].strftime('%Y-%m-%d') + " to " + windows[i].index[-1].strftime('%Y-%m-%d') 
+                                  for i, window in enumerate(window_dfs.keys())},
+            "processing_time_seconds": {
+                "loading": round(load_time - start_time, 2),
+                "windowing": round(window_time - load_time, 2),
+                "saving": round(save_time - window_time, 2),
+                "total": round(save_time - start_time, 2)
+            }
+        }
+        
+        with open(metadata_path, 'w') as f:
+            json.dump(window_info, f, indent=2, default=str)
+        
+        print(f"✅ Saved window information to {metadata_path}")
+        print(f"🎉 Total processing time: {save_time - start_time:.2f} seconds")
+    else:
+        print(f"❌ Error: Failed to save time windows")
+
+if __name__ == "__main__":
+    main() 

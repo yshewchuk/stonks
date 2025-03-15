@@ -56,8 +56,8 @@ class PricePredictionTrainingAgent:
             'n_steps': 60, # Example window size, adjust as needed
             'n_units': 128,
             'n_output_probabilities': n_output_probabilities, # Output size is now number of probabilities
-            'learning_rate': 0.001,
-            'dropout_rate': 0
+            'learning_rate': 0.0001,
+            'dropout_rate': 0.6
         }
 
     def _create_default_model(self, model_params):
@@ -83,9 +83,12 @@ class PricePredictionTrainingAgent:
         """
         all_ppc_data = []
         for model_data in model_data_list:
-            ppc_data = model_data.complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').values
-            if ppc_data.size > 0: # Only include if there's PPC data in this window
-                all_ppc_data.append(ppc_data)
+            # Get PPC columns directly from the complete data (no longer multi-level)
+            ppc_cols = [col for col in model_data.complete_data.columns if 'PPC' in col]
+            if ppc_cols:
+                ppc_data = model_data.complete_data[ppc_cols].values
+                if ppc_data.size > 0:  # Only include if there's PPC data in this window
+                    all_ppc_data.append(ppc_data)
 
         if not all_ppc_data:
             print("Warning: No Percent Price Change Probability (PPC) data found to calculate baseline.")
@@ -114,27 +117,78 @@ class PricePredictionTrainingAgent:
             if model_data.historical_data is None or model_data.historical_data.empty:
                 continue
 
-            X_train = model_data.historical_data.values
-            y_target = model_data.complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').values
-
-            if X_train.shape[0] < self.model_params['n_steps']:
+            # Get the historical data and ensure index is datetime
+            historical_df = model_data.historical_data
+            if not pd.api.types.is_datetime64_any_dtype(historical_df.index):
+                print(f"Warning: Historical data index is not datetime type. Skipping this ModelData.")
+                continue
+                
+            # Get the complete data and ensure index is datetime
+            complete_df = model_data.complete_data
+            if not pd.api.types.is_datetime64_any_dtype(complete_df.index):
+                print(f"Warning: Complete data index is not datetime type. Skipping this ModelData.")
+                continue
+                
+            # Extract PPC columns directly (no longer using multi-level columns)
+            ppc_cols = [col for col in complete_df.columns if 'PPC' in col]
+            if not ppc_cols:
+                print(f"Warning: No PPC columns found for ticker {self.ticker}. Skipping this ModelData.")
+                continue
+                
+            ppc_df = complete_df[ppc_cols]
+            
+            # Check if there are any PPC columns
+            if ppc_df.empty:
+                print(f"Warning: No PPC data found for ticker {self.ticker}. Skipping this ModelData.")
                 continue
 
+            # Convert to arrays for windowing
+            X_values = historical_df.values
+            
+            # Ensure the historical data has enough rows for a window
+            if len(X_values) < self.model_params['n_steps']:
+                print(f"Warning: Historical data has insufficient rows ({len(X_values)}) for window size {self.model_params['n_steps']}. Skipping this ModelData.")
+                continue
+                
             X_train_windowed = []
             y_target_windowed = []
-            for i in range(self.model_params['n_steps'], X_train.shape[0] + 1): # Create sliding windows
-                X_train_windowed.append(X_train[i - self.model_params['n_steps']:i])
-                # --- MODIFICATION: Take ONLY the LAST value of y_target window ---
-                y_target_windowed.append(y_target[i-1, :]) # Use i-1 to get the target corresponding to the window ending at i
-
+            dates_windowed = []
+            
+            # Create sliding windows
+            for i in range(self.model_params['n_steps'], len(X_values) + 1):
+                # Get the window of X values
+                window_X = X_values[i - self.model_params['n_steps']:i]
+                
+                # Get the date corresponding to the end of this window
+                window_end_date = historical_df.index[i-1]
+                
+                # Try to find the matching date in the complete data
+                if window_end_date in ppc_df.index:
+                    # Extract target values for this specific date
+                    target_values = ppc_df.loc[window_end_date].values
+                    
+                    # Save the feature window and corresponding target
+                    X_train_windowed.append(window_X)
+                    y_target_windowed.append(target_values)
+                    dates_windowed.append(window_end_date)
+                else:
+                    print(f"Warning: End date {window_end_date} from historical data not found in complete data. Skipping this window.")
+            
+            if not X_train_windowed:
+                print(f"Warning: No valid windows found for ModelData. Skipping this ModelData.")
+                continue
+                
             all_X.extend(X_train_windowed)
             all_y.extend(y_target_windowed)
 
         if not all_X: # Return empty dataset if no valid data
+            print("Warning: No valid data found for any ModelData objects.")
             return tf.data.Dataset.from_tensor_slices(([], []))
 
         X_dataset = np.array(all_X) # Convert lists to NumPy arrays for dataset creation
         y_dataset = np.array(all_y) # y_dataset now shape (num_samples, n_output_probabilities)
+        
+        print(f"Created dataset with {len(X_dataset)} samples. X shape: {X_dataset.shape}, y shape: {y_dataset.shape}")
 
         dataset = tf.data.Dataset.from_tensor_slices((X_dataset, y_dataset)) # Create dataset from slices
         dataset = dataset.batch(batch_size) # Batch the dataset
@@ -232,8 +286,11 @@ class PricePredictionTrainingAgent:
         all_predicted_ppc = []
         all_dates = []
 
-        # Get PPC column names from the first ModelData entry (assuming they are consistent)
-        y_target_columns = eval_data_list[0].complete_data.xs(self.ticker, level='Ticker', axis=1).filter(like='PPC').columns.tolist()
+        # Get PPC column names from the first ModelData entry
+        ppc_cols = [col for col in eval_data_list[0].complete_data.columns if 'PPC' in col]
+        if not ppc_cols:
+            print("Warning: No PPC columns found in evaluation data.")
+            return pd.DataFrame()
 
         # Iterate through eval dataset to collect expected values and dates in order
         for features, expected_prices in eval_dataset:
@@ -256,7 +313,7 @@ class PricePredictionTrainingAgent:
         loss_value = tf.keras.losses.MeanSquaredError()(all_expected_ppc_np, predictions).numpy() # Calculate loss over all predictions
 
         evaluation_df = pd.DataFrame()
-        for i, col_name in enumerate(y_target_columns):
+        for i, col_name in enumerate(ppc_cols):
             evaluation_df[f'Expected_{col_name}'] = all_expected_ppc_np[:, i] # Expected PPC values
             evaluation_df[f'Predicted_{col_name}'] = predictions[:, i] # Predicted PPC values
 
@@ -273,8 +330,13 @@ if __name__ == '__main__':
     dates = dates.unique()
     ticker = 'AAPL' # Train for a single ticker
     tickers = [ticker] # Ticker list for DataManager compatibility
+    
+    # Create flat columns for historical data (multi-level still expected here)
     columns_historical = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Volume', 'MA5', 'MA20']], names=['Ticker', 'OHLCV'])
-    columns_complete = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Volume', 'MA5', 'MA20'] + [f'PPC_{i}' for i in range(21)]], names=['Ticker', 'Data']) # Include PPC cols in complete data
+    
+    # Create flat columns for complete data (single-level now)
+    columns_complete = ['Open', 'High', 'Low', 'Close', 'Volume', 'MA5', 'MA20'] + [f'PPC_{i}' for i in range(21)]
+    
     num_windows = 20 # Example number of ModelData windows - increased for train/eval split
 
     model_data_list = []
@@ -287,7 +349,7 @@ if __name__ == '__main__':
             continue # Skip if not enough dates
 
         historical_data_values = np.random.rand(len(window_dates), len(tickers) * 7) # Dummy historical data
-        complete_data_values = np.random.rand(len(window_dates), len(tickers) * (7 + 21)) # Dummy complete data including PPC cols
+        complete_data_values = np.random.rand(len(window_dates), len(columns_complete)) # Dummy complete data including PPC cols
 
         historical_data_df = pd.DataFrame(historical_data_values, index=window_dates, columns=columns_historical)
         complete_data_df = pd.DataFrame(complete_data_values, index=window_dates, columns=columns_complete)

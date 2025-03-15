@@ -5,17 +5,17 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 
 from model.date_features import DateFeatures
-from model.moving_average import MovingAverage
+from transforms.moving_average import MovingAverage
 from model.portfolio import Portfolio
-from model.rolling_hi_lo import RollingHiLo
+from transforms.rolling_hi_lo import RollingHiLo
 from model.max_percent_change_per_day import DailyPercentChange
 from model.simulation import Simulation
 from data_sources.ticker_history import TickerHistory
 from model.model_data import ModelData # Import the ModelData DTO
-from model.percent_price_change_probability import PercentPriceChangeProbability
-from model.relative_strength import RSI
-from model.macd import MACD
-from model.lagged_features import LaggedFeatures
+from transforms.percent_price_change_probability import PercentPriceChangeProbability
+from transforms.relative_strength import RSI
+from transforms.macd import MACD
+from transforms.lagged_features import LaggedFeatures
 
 RAW_DATA_USED_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']  # Columns used from raw dataset
 PRICE_COLUMN_TAGS = ['Open', 'High', 'Low', 'Close', 'MA', 'Hi', 'Lo'] # List of price column tags

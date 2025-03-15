@@ -36,13 +36,15 @@ class ModelData:
 
         self.__tickers = tickers
         self.__historical_data = historical_data_df # Store the ALREADY SCALED historical data directly
+
         self.__complete_data = complete_data_df  # Store the complete, UNscaled data directly
+
         if start_date is None:
-            self.__start_date = self.complete_data.index.min() # Determine start and end dates from complete_data index
+            self.__start_date = self.__historical_data.index.min() # Determine start and end dates from complete_data index
         else:
             self.__start_date = pd.to_datetime(start_date)
         if end_date is None:
-            self.__end_date = self.complete_data.index.max()
+            self.__end_date = self.__historical_data.index.max()
         else:
             self.__end_date = pd.to_datetime(end_date)
 

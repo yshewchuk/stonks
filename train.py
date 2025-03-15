@@ -8,17 +8,9 @@ from model.training_agent import TrainingAgent
 import time
 import itertools
 
-from config import RAW_DATA_DIR, RAW_DATA_USED_COLUMNS, TRANSFORMED_DATA_DIR, TICKERS, FEATURE_COLUMNS_STOCK_DATA, N_STEPS, PREPARED_DATA_DIR, PREPARED_TRAIN_DATA_X_FILE, PREPARED_TRAIN_DATES_FILE, PREPARED_EVAL_DATA_X_FILE, PREPARED_EVAL_DATES_FILE
 from model.data_manager import DataManager
 from model.model_data import ModelData
-from model.moving_average import MovingAverage
-from model.portfolio import Portfolio
 from model.price_prediction_training_agent import PricePredictionTrainingAgent
-from model.rolling_hi_lo import RollingHiLo
-from model.simulation import Simulation
-from model.simulation_state import SimulationState
-from data_sources.ticker_history import TickerHistory
-from model.transaction import Transaction
 from utils.dataframe import print_dataframe_debugging_info
 from utils.obj import print_public_interface
 
