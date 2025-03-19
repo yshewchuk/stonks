@@ -42,10 +42,11 @@ PERFORMANCE_CONFIG = {
     }]
 }
 
+# Historical data configuration
 HISTORICAL_COLUMN_PREFIXES = 'historical_column_prefixes'
 
-# Merge configuration
-MERGE_CONFIG = {
+# Historical filter configuration (previously named MERGE_CONFIG)
+HISTORICAL_FILTER_CONFIG = {
     HISTORICAL_COLUMN_PREFIXES: [
         "Open", "High", "Low", "Close", "Volume",  # Original price data
         "MA", "Hi", "Lo", "RSI", "MoACD",  # Technical indicators
