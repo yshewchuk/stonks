@@ -130,7 +130,7 @@ class PricePredictionTrainingAgent:
                 continue
                 
             # Extract PPC columns directly (no longer using multi-level columns)
-            ppc_cols = [col for col in complete_df.columns if 'PPC' in col]
+            ppc_cols = [col for col in complete_df.columns if self.ticker in col[0] and 'PPC' in col[1]]
             if not ppc_cols:
                 print(f"Warning: No PPC columns found for ticker {self.ticker}. Skipping this ModelData.")
                 continue
@@ -224,8 +224,8 @@ class PricePredictionTrainingAgent:
         eval_dataset = self._create_dataset(eval_data_list, batch_size=batch_size, shuffle=False)
 
         print("\n--- Starting model.fit() training ---")
-        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.8, patience=15, min_lr=0.0000001)
-        stop_training = tf.keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=100, verbose=1, restore_best_weights=True, start_from_epoch=5)
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=0.0000001)
+        stop_training = tf.keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.0001, patience=20, verbose=1, restore_best_weights=True, start_from_epoch=5)
         history = self.model.fit( # --- Use model.fit() ---
             train_dataset,           # Training data dataset
             epochs=epochs,             # Number of epochs
