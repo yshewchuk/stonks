@@ -4,6 +4,7 @@ import os
 import concurrent.futures
 import multiprocessing
 from config import OUTPUT_DIR, MAX_WORKERS
+from utils.logger import log_info, log_success, log_error, log_warning, log_progress
 
 def print_dataframe_debugging_info(df, name="DataFrame"):
     """
@@ -22,7 +23,7 @@ def print_dataframe_debugging_info(df, name="DataFrame"):
     print(f"\n--- Debugging Info for: {name} ---")
 
     if not isinstance(df, pd.DataFrame):
-        print(f"⚠️ Warning: Input is not a Pandas DataFrame. Input type: {type(df)}")
+        log_warning(f"Input is not a Pandas DataFrame. Input type: {type(df)}")
         return
 
     print(f"Shape: {df.shape}")
@@ -64,7 +65,7 @@ def verify_dataframe_structure(df, expected_dtypes, ignore_extra_columns=False, 
     expected_columns = list(expected_dtypes.keys()) # Derive expected columns from dtypes dict keys
 
     if not isinstance(df, pd.DataFrame):
-        print(f"❌ Error: Input is not a Pandas DataFrame. Input type: {type(df)}")
+        log_error(f"Input is not a Pandas DataFrame. Input type: {type(df)}")
         return False
 
     # 1. Column Name Verification (same as before)
@@ -76,11 +77,11 @@ def verify_dataframe_structure(df, expected_dtypes, ignore_extra_columns=False, 
     extra_columns = list(df_columns_set - df_columns_set)
 
     if missing_columns:
-        print(f"❌ Error: DataFrame is missing expected columns: {missing_columns}")
+        log_error(f"DataFrame is missing expected columns: {missing_columns}")
         return False
     
     if extra_columns and not ignore_extra_columns:
-        print(f"❌ Error: DataFrame has extra columns not in expected list: {extra_columns}")
+        log_error(f"DataFrame has extra columns not in expected list: {extra_columns}")
         return False
 
     # 2. Data Type Verification (same as before)
@@ -91,7 +92,7 @@ def verify_dataframe_structure(df, expected_dtypes, ignore_extra_columns=False, 
             dtype_mismatches[column_name] = {'expected': expected_dtype, 'actual': actual_dtype}
 
     if dtype_mismatches:
-        print("❌ Error: Data type mismatches found in columns:")
+        log_error("Data type mismatches found in columns:")
         for col, mismatch_info in dtype_mismatches.items():
             print(f"  - Column '{col}': Expected type '{mismatch_info['expected']}', Actual type '{mismatch_info['actual']}'")
         return False
@@ -100,7 +101,7 @@ def verify_dataframe_structure(df, expected_dtypes, ignore_extra_columns=False, 
     if expected_index_name is not None:
         actual_index_name = df.index.name
         if actual_index_name != expected_index_name:
-            print(f"❌ Error: Index name mismatch. Expected: '{expected_index_name}', Actual: '{actual_index_name}'")
+            log_error(f"Index name mismatch. Expected: '{expected_index_name}', Actual: '{actual_index_name}'")
             return False
 
     # 4. Index Data Type Verification (New)
@@ -108,7 +109,7 @@ def verify_dataframe_structure(df, expected_dtypes, ignore_extra_columns=False, 
         actual_index_dtype = df.index.dtype
 
         if actual_index_dtype != expected_index_dtype and not (pd.api.types.is_datetime64_any_dtype(actual_index_dtype) and pd.api.types.is_datetime64_any_dtype(expected_index_dtype)):
-            print(f"❌ Error: Index data type mismatch. Expected: '{expected_index_dtype}', Actual: '{actual_index_dtype}'")
+            log_error(f"Index data type mismatch. Expected: '{expected_index_dtype}', Actual: '{actual_index_dtype}'")
             return False
 
     return True
@@ -146,15 +147,15 @@ def write_dataframes_to_parquet(dataframes_dict, config, max_workers=None):
         bool: True if all dataframes were saved successfully, False otherwise
     """
     if not isinstance(dataframes_dict, dict):
-        print("❌ Error: dataframes_dict must be a dictionary")
+        log_error("dataframes_dict must be a dictionary")
         return False
         
     if not all(isinstance(df, pd.DataFrame) for df in dataframes_dict.values()):
-        print("❌ Error: All values in dataframes_dict must be pandas DataFrames")
+        log_error("All values in dataframes_dict must be pandas DataFrames")
         return False
         
     if OUTPUT_DIR not in config:
-        print(f"❌ Error: config must contain an {OUTPUT_DIR} key")
+        log_error(f"config must contain an {OUTPUT_DIR} key")
         return False
         
     try:
@@ -180,7 +181,7 @@ def write_dataframes_to_parquet(dataframes_dict, config, max_workers=None):
             else:
                 max_workers = max(1, min(int(multiprocessing.cpu_count() * 0.75), 8))
         
-        print(f"ℹ️ Using {max_workers} processes for writing parquet files")
+        log_info(f"Using {max_workers} processes for writing parquet files")
         
         # Use ProcessPoolExecutor for parallel writing (CPU-bound due to compression)
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -192,21 +193,20 @@ def write_dataframes_to_parquet(dataframes_dict, config, max_workers=None):
                 
                 if success:
                     successful_writes += 1
-                    # Print status every 10 files or for the last file
-                    if total_files < 20 or (i + 1) % 10 == 0 or (i + 1) == total_files:
-                        print(f"✅ Progress: {i + 1}/{total_files} files written ({successful_writes} successful)")
+                    # Log progress at appropriate intervals
+                    log_progress(i + 1, total_files, "Files written", frequency=5)
                 else:
-                    print(f"❌ Error writing '{name}' to parquet: {error_message}")
+                    log_error(f"Error writing '{name}' to parquet: {error_message}")
         
         if successful_writes == total_files:
-            print(f"✅ Successfully wrote all {total_files} dataframes to parquet files")
+            log_success(f"Successfully wrote all {total_files} dataframes to parquet files")
             return True
         else:
-            print(f"⚠️ Warning: Only {successful_writes} out of {total_files} dataframes were successfully written")
+            log_warning(f"Only {successful_writes} out of {total_files} dataframes were successfully written")
             return successful_writes > 0
         
     except Exception as e:
-        print(f"❌ Error writing dataframes to parquet: {e}")
+        log_error(f"Error writing dataframes to parquet: {e}")
         return False
 
 def _read_parquet_file(args):
@@ -246,7 +246,7 @@ def read_parquet_files_from_directory(directory, max_workers=None):
     dataframes = {}
     
     if not os.path.exists(directory):
-        print(f"❌ Error: Directory not found: {directory}")
+        log_error(f"Directory not found: {directory}")
         return dataframes
         
     try:
@@ -254,7 +254,7 @@ def read_parquet_files_from_directory(directory, max_workers=None):
         files = [f for f in os.listdir(directory) if f.endswith('.parquet')]
         
         if not files:
-            print(f"⚠️ Warning: No parquet files found in {directory}")
+            log_warning(f"No parquet files found in {directory}")
             return dataframes
 
         # Determine process pool size - use max_workers if provided, otherwise default
@@ -263,31 +263,29 @@ def read_parquet_files_from_directory(directory, max_workers=None):
         if max_workers is None:
             max_workers = max(1, min(int(multiprocessing.cpu_count() * 0.75), 8))
             
-        print(f"ℹ️ Using {max_workers} processes for reading parquet files")
+        log_info(f"Using {max_workers} processes for reading parquet files")
         
-        current = 0
-            
         # Use ProcessPoolExecutor for parallel reading (CPU-bound due to decompression)
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             tasks = [(file, directory) for file in files]
             futures = {executor.submit(_read_parquet_file, task): task[0] for task in tasks}
             
             # Process results as they complete
+            current = 0
             for future in concurrent.futures.as_completed(futures):
                 name, df, error_message = future.result()
                 
                 if df is not None:
                     current += 1
                     dataframes[name] = df
-                    if len(files) < 20 or current % 10 == 0 or current == len(files):
-                        print(f"✅ Loaded DataFrame '{name}' ({current}/{len(files)}): {len(df)} rows")
+                    log_progress(current, len(files), "Files loaded")
                 else:
-                    print(f"❌ Error loading {futures[future]}: {error_message}")
+                    log_error(f"Error loading {futures[future]}: {error_message}")
         
         return dataframes
         
     except Exception as e:
-        print(f"❌ Error reading parquet files from directory: {e}")
+        log_error(f"Error reading parquet files from directory: {e}")
         return dataframes
 
 def extract_data_range(df, num_rows, extract_recent=True, min_rows_required=None):

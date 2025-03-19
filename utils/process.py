@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from config import OUTPUT_DIR
 import pandas as pd
+from utils.logger import log_info, log_success, log_error, log_warning
 
 class DateTimeEncoder(json.JSONEncoder):
     """
@@ -38,11 +39,11 @@ class Process:
             bool: True if successful, False otherwise
         """
         if not isinstance(config, dict):
-            print("❌ Error: config must be a dictionary")
+            log_error("config must be a dictionary")
             return False
             
         if OUTPUT_DIR not in config:
-            print(f"❌ Error: config must contain an {OUTPUT_DIR} key")
+            log_error(f"config must contain an {OUTPUT_DIR} key")
             return False
             
         try:
@@ -53,7 +54,7 @@ class Process:
             # Create a backup of the existing content
             backup_created = Process._create_backup(output_dir)
             if backup_created:
-                print(f"✅ Backup of existing content created in {output_dir}")
+                log_success(f"Backup of existing content created in {output_dir}")
                 
                 # After successful backup, clean up the output directory
                 # by removing all non-backup files and folders
@@ -68,7 +69,7 @@ class Process:
                     else:
                         os.remove(item_path)
                 
-                print(f"✅ Cleaned output directory {output_dir}")
+                log_success(f"Cleaned output directory {output_dir}")
             
             # Create a copy of the config to avoid modifying the original
             metadata = config.copy()
@@ -82,11 +83,11 @@ class Process:
             with open(metadata_path, 'w') as f:
                 json.dump(metadata, f, indent=4, cls=DateTimeEncoder)
                 
-            print(f"✅ Metadata written to {metadata_path}")
+            log_success(f"Metadata written to {metadata_path}")
             return True
             
         except Exception as e:
-            print(f"❌ Error starting process: {e}")
+            log_error(f"Error starting process: {e}")
             return False
     
     @staticmethod
@@ -110,7 +111,7 @@ class Process:
             
             # If directory is empty (excluding backup folders), no need for backup
             if not non_backup_items:
-                print(f"ℹ️ No files to backup in {directory}")
+                log_info(f"No files to backup in {directory}")
                 return False
                 
             # Find the highest existing backup number
@@ -132,9 +133,9 @@ class Process:
                 else:
                     shutil.copy2(item_path, backup_path)
             
-            print(f"✅ Created backup #{next_backup_num} in {backup_dir}")
+            log_success(f"Created backup #{next_backup_num} in {backup_dir}")
             return True
             
         except Exception as e:
-            print(f"⚠️ Warning: Could not create backup: {e}")
+            log_warning(f"Could not create backup: {e}")
             return False

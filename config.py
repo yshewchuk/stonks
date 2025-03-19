@@ -5,6 +5,8 @@ TICKERS = 'tickers'
 INPUT_DIR = "input_dir"
 OUTPUT_DIR = 'output_dir'
 MAX_WORKERS = 'max_workers'
+DESCRIPTION = 'description'
+STEP_NAME = 'step_name'
 
 # Training/Evaluation split configuration
 EVALUATION_ROWS = 'evaluation_rows'

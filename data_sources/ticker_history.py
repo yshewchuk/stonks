@@ -5,6 +5,7 @@ import os
 import numpy
 
 from utils.dataframe import print_dataframe_debugging_info, verify_dataframe_structure
+from utils.logger import log_info, log_success, log_error, log_warning
 
 RAW_DATA_EXPECTED_COLUMNS = {
     'Open': float,
@@ -36,15 +37,15 @@ class TickerHistory:
             pandas.DataFrame: Dataframe containing ticker history data
         """
         try:
-            print(f"Downloading data for {ticker} from yfinance...")
+            log_info(f"Downloading data for {ticker} from yfinance...")
             ticker_yf = yf.Ticker(ticker)
             df = ticker_yf.history(period=period, start=start_date, end=end_date)
-            print(f"✅ Successfully downloaded data for {ticker}")
+            log_success(f"Successfully downloaded data for {ticker}")
             
             df = TickerHistory._sanitize_dataframe(df)
             
         except Exception as e:
-            print(f"❌ Error downloading data for {ticker}: {e}")
+            log_error(f"Error downloading data for {ticker}: {e}")
             raise e
         
         return df
@@ -61,7 +62,7 @@ class TickerHistory:
             pandas.DataFrame: Sanitized dataframe
         """
         if not verify_dataframe_structure(df, RAW_DATA_EXPECTED_COLUMNS, expected_index_name='Date', expected_index_dtype=numpy.datetime64):
-            print(f"❌ Data is in unexpected format")
+            log_error(f"Data is in unexpected format")
             raise Exception("Invalid raw ticker data")
 
         df = df.copy()
