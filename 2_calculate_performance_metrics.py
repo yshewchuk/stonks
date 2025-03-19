@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Script to calculate performance metrics on training data.
+Script to calculate performance metrics on all stock data.
 
 This script:
-1. Loads the isolated training data from step 2
+1. Loads the raw stock data from step 1
 2. Calculates technical indicators and performance metrics
-3. Saves the processed training data to a new directory
+3. Saves the processed data to a new directory
 
-Uses multiprocessing for all operations to maximize performance.
+Always uses multiprocessing for all operations to maximize performance.
 """
 
 import os
@@ -20,18 +20,21 @@ from datetime import datetime
 import pandas as pd
 
 from config import (
-    CONFIG, OUTPUT_DIR, INPUT_DIR, MAX_WORKERS, 
-    RAW_DATA_USED_COLUMNS, WINDOWS, LAG_PERIODS, PREDICTIONS_CONFIG, PERFORMANCE_CONFIG
+    CONFIG, OUTPUT_DIR, INPUT_DIR, MAX_WORKERS, TICKERS,
+    RAW_DATA_USED_COLUMNS, WINDOWS, LAG_PERIODS, PREDICTIONS_CONFIG, 
+    PERFORMANCE_CONFIG, DESCRIPTION, STEP_NAME
 )
 from transforms.raw_stock_preprocessor import RawStockPreProcessor
 from utils.dataframe import read_parquet_files_from_directory, write_dataframes_to_parquet
 from utils.process import Process
+from utils.logger import log_step_start, log_step_complete, log_info, log_success, log_error, log_warning, log_progress, log_section
 
 # Configuration
 CONFIG = CONFIG | PERFORMANCE_CONFIG | {
-    INPUT_DIR: "data/2_isolate_training_data",
-    OUTPUT_DIR: "data/3_training_performance",
-    "description": "Training data with calculated performance metrics"
+    INPUT_DIR: "data/1_raw_data",
+    OUTPUT_DIR: "data/2_performance_metrics",
+    DESCRIPTION: "Stock data with calculated performance metrics",
+    STEP_NAME: "Calculate Performance Metrics"
 }
 
 def _process_ticker_data(args):
@@ -68,16 +71,16 @@ def _process_ticker_data(args):
         return (ticker, None, str(e))
 
 def main():
-    """Main function to run the training performance calculation process."""
+    """Main function to run the performance calculation process."""
     start_time = time.time()
     
     # Initialize the process
-    print(f"🚀 Starting training performance calculation: {CONFIG[INPUT_DIR]} → {CONFIG[OUTPUT_DIR]}")
+    log_step_start(CONFIG)
     Process.start_process(CONFIG)
     
     # Display processor configuration
-    print(f"ℹ️ System has {multiprocessing.cpu_count()} CPU cores available")
-    print(f"ℹ️ Using up to {CONFIG[MAX_WORKERS]} worker processes")
+    log_info(f"System has {multiprocessing.cpu_count()} CPU cores available")
+    log_info(f"Using up to {CONFIG[MAX_WORKERS]} worker processes")
     
     # Get performance parameters from config
     raw_data_used_columns = CONFIG[RAW_DATA_USED_COLUMNS]
@@ -85,25 +88,28 @@ def main():
     lag_periods = CONFIG[LAG_PERIODS]
     predictions_config = CONFIG[PREDICTIONS_CONFIG]
     
-    print(f"ℹ️ Using performance metrics configuration:")
-    print(f"  - Raw data used columns: {raw_data_used_columns}")
-    print(f"  - Windows: {windows}")
-    print(f"  - Lag periods: {lag_periods}")
-    print(f"  - Predictions config: {len(predictions_config)} configurations")
+    log_section("Configuration")
+    log_info(f"Using performance metrics configuration:")
+    log_info(f"Raw data used columns: {raw_data_used_columns}")
+    log_info(f"Windows: {windows}")
+    log_info(f"Lag periods: {lag_periods}")
+    log_info(f"Predictions config: {len(predictions_config)} configurations")
     
-    # Load training data using multiprocessing
-    print(f"🔍 Loading training data from {CONFIG[INPUT_DIR]} (multiprocessing)")
+    # Load raw data using multiprocessing
+    log_section("Loading Data")
+    log_info(f"Loading raw data from {CONFIG[INPUT_DIR]}")
     ticker_dataframes = read_parquet_files_from_directory(CONFIG[INPUT_DIR])
     
     if not ticker_dataframes:
-        print(f"❌ Error: No training data found in {CONFIG[INPUT_DIR]}")
+        log_error(f"No raw data found in {CONFIG[INPUT_DIR]}")
         return
     
     load_time = time.time()
-    print(f"✅ Loaded {len(ticker_dataframes)} ticker dataframes in {load_time - start_time:.2f} seconds")
+    log_success(f"Loaded {len(ticker_dataframes)} ticker dataframes in {load_time - start_time:.2f} seconds")
     
-    # Process training data using multiprocessing
-    print(f"🔄 Processing training data for {len(ticker_dataframes)} tickers (multiprocessing)...")
+    # Process raw data using multiprocessing
+    log_section("Processing Data")
+    log_info(f"Processing data for {len(ticker_dataframes)} tickers")
     processed_dataframes = {}
     total_tickers = len(ticker_dataframes)
     
@@ -125,30 +131,29 @@ def main():
             
             if processed_df is not None:
                 processed_dataframes[ticker] = processed_df
-                # Print progress every 10 tickers or at the end
-                if completed % 10 == 0 or completed == total_tickers:
-                    print(f"  ✅ Progress: {completed}/{total_tickers} tickers processed ({completed / total_tickers * 100:.1f}%)")
+                log_progress(completed, total_tickers, "Tickers processed")
             else:
-                print(f"  ❌ Error processing ticker {ticker}: {error_message}")
+                log_error(f"Error processing ticker {ticker}: {error_message}")
     
     process_time = time.time()
-    print(f"✅ Processed training data for {len(processed_dataframes)} tickers in {process_time - load_time:.2f} seconds")
+    log_success(f"Processed data for {len(processed_dataframes)} tickers in {process_time - load_time:.2f} seconds")
     
     # Save processed dataframes using multiprocessing
-    print(f"💾 Saving processed training data to {CONFIG[OUTPUT_DIR]} (multiprocessing)...")
+    log_section("Saving Results")
+    log_info(f"Saving processed data to {CONFIG[OUTPUT_DIR]}")
     success = write_dataframes_to_parquet(processed_dataframes, CONFIG)
     
     save_time = time.time()
     
     if success:
-        print(f"✅ Successfully saved processed training data for {len(processed_dataframes)} tickers to {CONFIG[OUTPUT_DIR]} in {save_time - process_time:.2f} seconds")
+        log_success(f"Successfully saved processed data for {len(processed_dataframes)} tickers to {CONFIG[OUTPUT_DIR]} in {save_time - process_time:.2f} seconds")
         
         # Save additional metadata
         metadata_path = os.path.join(CONFIG[OUTPUT_DIR], 'processing_info.json')
         processing_info = {
             "total_tickers_processed": len(processed_dataframes),
             "original_tickers": len(ticker_dataframes),
-            "failed_tickers": len(ticker_dataframes) - len(processed_dataframes),
+            "failed_tickers": [ticker for ticker in ticker_dataframes if ticker not in processed_dataframes],
             "technical_indicators": {
                 "raw_data_used_columns": raw_data_used_columns,
                 "windows": windows,
@@ -169,33 +174,36 @@ def main():
         with open(metadata_path, 'w') as f:
             json.dump(processing_info, f, indent=2, default=str)
         
-        print(f"✅ Saved processing information to {metadata_path}")
+        log_success(f"Saved processing information to {metadata_path}")
         
         # Summarize the features generated for the first ticker (as an example)
-        first_ticker = next(iter(processed_dataframes))
-        first_df = processed_dataframes[first_ticker]
-        print(f"\n📊 Example of features generated for {first_ticker}:")
-        print(f"Total features: {len(first_df.columns)}")
-        print(f"Total rows: {len(first_df)}")
+        if processed_dataframes:
+            first_ticker = next(iter(processed_dataframes))
+            first_df = processed_dataframes[first_ticker]
+            
+            log_section("Feature Summary")
+            log_info(f"Example of features generated for {first_ticker}:")
+            log_info(f"Total features: {len(first_df.columns)}")
+            log_info(f"Total rows: {len(first_df)}")
+            
+            # Show sample column names by category
+            column_categories = {
+                "Original": [col for col in first_df.columns if col in raw_data_used_columns],
+                "Moving Average": [col for col in first_df.columns if col.startswith("MA")],
+                "Hi-Lo": [col for col in first_df.columns if col.startswith("Hi") or col.startswith("Lo")],
+                "RSI": [col for col in first_df.columns if col.startswith("RSI")],
+                "MACD": [col for col in first_df.columns if "MoACD" in col],
+                "Price Change Prob": [col for col in first_df.columns if col.startswith("PPCProb")],
+                "Lagged Features": [col for col in first_df.columns if "_Lag" in col]
+            }
+            
+            for category, columns in column_categories.items():
+                example_cols = columns[:3] if len(columns) > 3 else columns
+                log_info(f"{category} features ({len(columns)} total): {', '.join(example_cols)}...")
         
-        # Show sample column names by category
-        column_categories = {
-            "Original": [col for col in first_df.columns if col in raw_data_used_columns],
-            "Moving Average": [col for col in first_df.columns if col.startswith("MA")],
-            "Hi-Lo": [col for col in first_df.columns if col.startswith("Hi") or col.startswith("Lo")],
-            "RSI": [col for col in first_df.columns if col.startswith("RSI")],
-            "MACD": [col for col in first_df.columns if "MoACD" in col],
-            "Price Change Prob": [col for col in first_df.columns if col.startswith("PPCProb")],
-            "Lagged Features": [col for col in first_df.columns if "_Lag" in col]
-        }
-        
-        for category, columns in column_categories.items():
-            example_cols = columns[:3] if len(columns) > 3 else columns
-            print(f"\n{category} features ({len(columns)} total): {', '.join(example_cols)}...")
-        
-        print(f"🎉 Total processing time: {save_time - start_time:.2f} seconds")
+        log_step_complete(start_time)
     else:
-        print(f"❌ Error: Failed to save processed training data")
+        log_error(f"Failed to save processed data")
 
 if __name__ == "__main__":
-    main() 
+    main()
