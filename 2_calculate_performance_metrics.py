@@ -148,8 +148,7 @@ def main():
     if success:
         log_success(f"Successfully saved processed data for {len(processed_dataframes)} tickers to {CONFIG[OUTPUT_DIR]} in {save_time - process_time:.2f} seconds")
         
-        # Save additional metadata
-        metadata_path = os.path.join(CONFIG[OUTPUT_DIR], 'processing_info.json')
+        # Save execution metadata using the utility method
         processing_info = {
             "total_tickers_processed": len(processed_dataframes),
             "original_tickers": len(ticker_dataframes),
@@ -159,22 +158,22 @@ def main():
                 "windows": windows,
                 "lag_periods": lag_periods,
                 "predictions_config": predictions_config
-            },
-            "multiprocessing_used": True,
-            "workers_used": CONFIG[MAX_WORKERS],
-            "cpu_cores_available": multiprocessing.cpu_count(),
-            "processing_time_seconds": {
-                "loading": round(load_time - start_time, 2),
-                "processing": round(process_time - load_time, 2),
-                "saving": round(save_time - process_time, 2),
-                "total": round(save_time - start_time, 2)
             }
         }
         
-        with open(metadata_path, 'w') as f:
-            json.dump(processing_info, f, indent=2, default=str)
+        time_markers = {
+            "load": load_time,
+            "process": process_time,
+            "save": save_time
+        }
         
-        log_success(f"Saved processing information to {metadata_path}")
+        Process.save_execution_metadata(
+            config=CONFIG,
+            filename='processing_info.json',
+            metadata=processing_info,
+            start_time=start_time,
+            time_markers=time_markers
+        )
         
         # Summarize the features generated for the first ticker (as an example)
         if processed_dataframes:

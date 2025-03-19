@@ -6,6 +6,7 @@ from datetime import datetime
 from config import OUTPUT_DIR
 import pandas as pd
 from utils.logger import log_info, log_success, log_error, log_warning
+import multiprocessing
 
 class DateTimeEncoder(json.JSONEncoder):
     """
@@ -138,4 +139,78 @@ class Process:
             
         except Exception as e:
             log_warning(f"Could not create backup: {e}")
+            return False
+            
+    @staticmethod
+    def save_execution_metadata(config, filename, metadata, start_time=None, time_markers=None):
+        """
+        Saves execution metadata to a JSON file in the output directory.
+        
+        Args:
+            config (dict): Configuration dictionary containing OUTPUT_DIR key
+            filename (str): Name of the JSON file to create (without path)
+            metadata (dict): Dictionary containing the metadata to save
+            start_time (float, optional): Start time of the process (from time.time())
+            time_markers (dict, optional): Dictionary of named time markers (from time.time())
+                Example: {'load': load_time, 'process': process_time, 'save': save_time}
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not isinstance(config, dict) or OUTPUT_DIR not in config:
+            log_error(f"Config must be a dictionary containing {OUTPUT_DIR} key")
+            return False
+            
+        if not isinstance(metadata, dict):
+            log_error("Metadata must be a dictionary")
+            return False
+            
+        try:
+            # Ensure output directory exists
+            output_dir = config[OUTPUT_DIR]
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Create a copy of the metadata to avoid modifying the original
+            result_metadata = metadata.copy()
+            
+            # Add common execution information
+            if 'multiprocessing_used' not in result_metadata:
+                result_metadata['multiprocessing_used'] = True
+                
+            if 'workers_used' not in result_metadata and 'max_workers' in config:
+                result_metadata['workers_used'] = config['max_workers']
+                
+            if 'cpu_cores_available' not in result_metadata:
+                result_metadata['cpu_cores_available'] = multiprocessing.cpu_count()
+            
+            # Add time measurements if provided
+            if start_time is not None and time_markers is not None:
+                processing_times = {}
+                
+                # Sort time markers chronologically
+                sorted_markers = sorted(time_markers.items(), key=lambda x: x[1])
+                
+                # Calculate time differences between markers
+                prev_time, prev_name = start_time, "start"
+                for name, marker_time in sorted_markers:
+                    processing_times[f"{prev_name}_to_{name}"] = round(marker_time - prev_time, 2)
+                    prev_time, prev_name = marker_time, name
+                
+                # Add total time
+                if sorted_markers:
+                    last_time = sorted_markers[-1][1]
+                    processing_times["total"] = round(last_time - start_time, 2)
+                
+                result_metadata['processing_time_seconds'] = processing_times
+            
+            # Write metadata to file
+            metadata_path = os.path.join(output_dir, filename)
+            with open(metadata_path, 'w') as f:
+                json.dump(result_metadata, f, indent=2, default=str)
+            
+            log_success(f"Saved execution metadata to {metadata_path}")
+            return True
+            
+        except Exception as e:
+            log_error(f"Error saving execution metadata: {e}")
             return False

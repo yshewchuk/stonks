@@ -130,8 +130,7 @@ def main():
     if success:
         log_success(f"Successfully saved raw data for {len(ticker_dataframes)} tickers to {CONFIG[OUTPUT_DIR]} in {save_time - download_time:.2f} seconds")
         
-        # Save additional metadata
-        metadata_path = os.path.join(CONFIG[OUTPUT_DIR], 'download_info.json')
+        # Save execution metadata using the utility method
         download_info = {
             "date_range": {
                 "start": start_date.strftime('%Y-%m-%d'),
@@ -140,21 +139,22 @@ def main():
             "total_tickers_downloaded": len(ticker_dataframes),
             "requested_tickers": tickers,
             "failed_tickers": [ticker for ticker in tickers if ticker not in ticker_dataframes],
-            "rows_per_ticker": {ticker: len(df) for ticker, df in ticker_dataframes.items()},
-            "multiprocessing_used": True,
-            "workers_used": CONFIG[MAX_WORKERS],
-            "cpu_cores_available": multiprocessing.cpu_count(),
-            "processing_time_seconds": {
-                "downloading": round(download_time - start_time, 2),
-                "saving": round(save_time - download_time, 2),
-                "total": round(save_time - start_time, 2)
-            }
+            "rows_per_ticker": {ticker: len(df) for ticker, df in ticker_dataframes.items()}
         }
         
-        with open(metadata_path, 'w') as f:
-            json.dump(download_info, f, indent=2, default=str)
+        time_markers = {
+            "download": download_time,
+            "save": save_time
+        }
         
-        log_success(f"Saved download information to {metadata_path}")
+        Process.save_execution_metadata(
+            config=CONFIG,
+            filename='download_info.json',
+            metadata=download_info,
+            start_time=start_time,
+            time_markers=time_markers
+        )
+        
         log_step_complete(start_time)
     else:
         log_error(f"Failed to save raw stock data")
