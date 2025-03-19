@@ -1,11 +1,27 @@
 ---
 description: 
-globs: 
+globs: *.py
 alwaysApply: false
 ---
-- Scripts created to test out functionality should be added to the /tests folder
-- Do not introduce new dependencies on third party packages unless you have exhausted all other options
+---
+description: Any conversations that lead to code development
+globs: 
+alwaysApply: true
+---
+== Process ==
+- Write every code change updating one thing at a time
+- Every code change that you make will be code reviewed, try to keep code reviews small and concise so that the reviewer can understand your changes
+- Start simple for any request, we can always come back later to make improvments
+- Don't assume requirements unless told to 'be creative'
+- Do not introduce new dependencies on third party packages unless you have exhausted all other options - when you add dependencies in changes, call it out in the chat and specify what other options were considered
 - Consider the performance implications of the code you write, try to avoid redundant operations if possible (for example avoid extra copying of data if it's not necessary, or extra processing if it won't have impact). If there are assumptions we need to make about the data or process document the assumptions in comments in the code instead.
 - Prefer to adhere to existing conventions of the code to keep consistency across the codebase
+
+== Standards ==
+- Scripts created to test out functionality should be added to the /tests folder
+- Executable scripts should be in the main folder, shared functionality should be held in lower level folders
+
+== Helpful Hints ==
+- This is a windows environment - consider that when running commands
 - When running python, only the `py` command will work, `python` does not
 - When running python scripts in other folders you'll need to enable relative imports by running it like `py -m tests.test_dataframe_utils`
