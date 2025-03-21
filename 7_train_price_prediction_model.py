@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
+import tensorflow as tf
 
 from config import (
     CONFIG, OUTPUT_DIR, INPUT_DIR, MAX_WORKERS, TICKERS,
@@ -34,6 +35,7 @@ from utils.process import Process
 from utils.logger import log_step_start, log_step_complete, log_info, log_success, log_error, log_warning, log_progress, log_section
 from model.model_data import ModelData
 from model.price_prediction_training_agent import PricePredictionTrainingAgent
+from model.model_builder import ModelBuilder
 
 # Local constants for this script
 HISTORICAL_INPUT_DIR = 'historical_input_dir'
@@ -42,6 +44,9 @@ EPOCHS = 'epochs'
 BATCH_SIZE = 'batch_size'
 EARLY_STOPPING_PATIENCE = 'early_stopping_patience'
 MODEL_PARAMS = 'model_params'
+
+# Get default model parameters from ModelBuilder
+default_model_params = ModelBuilder.get_default_model_params()
 
 # Configuration
 CONFIG = CONFIG | TRAINING_EVALUATION_CONFIG | TIME_WINDOW_CONFIG | {
@@ -53,13 +58,22 @@ CONFIG = CONFIG | TRAINING_EVALUATION_CONFIG | TIME_WINDOW_CONFIG | {
     # Training configuration
     EPOCHS: 1000,
     BATCH_SIZE: 32,
-    EARLY_STOPPING_PATIENCE: 50,
+    EARLY_STOPPING_PATIENCE: 30,
+    # Start with default model parameters and override specific settings
     MODEL_PARAMS: {
-        'n_steps': TIME_WINDOW_CONFIG[WINDOW_SIZE],  # Number of time steps (days) in each window
-        'n_units': 128,
-        'learning_rate': 0.001,
-        'dropout_rate': 0.2,
-        'n_output_probabilities': 21
+        **default_model_params,  # Use all defaults from ModelBuilder
+        
+        # Override specific parameters
+        'n_steps': TIME_WINDOW_CONFIG[WINDOW_SIZE],  # Use window size from config
+        'n_units': 128,                  # Larger network than default
+        'dropout_rate': 0.3,             # Higher dropout for better regularization
+        'learning_rate': 0.001,          # Different learning rate
+        
+        # Basic parameters that will be overridden by --model-type argument
+        'cnn_filters': [],               # No CNN by default, override with --model-type
+        'cnn_kernel_sizes': [],          # No CNN by default, override with --model-type
+        'l2_reg': 0.0,                   # No regularization by default
+        'use_batch_norm': False          # No batch normalization by default
     }
 }
 
@@ -217,7 +231,7 @@ def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
         log_error(f"No training data available for ticker {ticker}")
         return {
             'success': False,
-            'ticker': ticker,  # Add ticker to error result
+            'ticker': ticker,
             'error': 'No training data available',
             'train_windows': 0,
             'eval_windows': len(eval_data_list)
@@ -235,11 +249,23 @@ def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
         model_params = CONFIG[MODEL_PARAMS].copy()
         model_params['n_features_total'] = feature_count
         
-        # Create and train the model
+        # Build the model using ModelBuilder
+        log_info(f"Building model with parameters: {model_params}")
+        model = ModelBuilder.build_price_prediction_model(model_params)
+                
+        # Initialize the model to ensure all flags are properly set
+        # This creates input tensors and builds the model graph
+        log_info("Initializing model to ensure all internal flags are set")
+        dummy_input = np.zeros((1, model_params['n_steps'], model_params['n_features_total']))
+        _ = model(dummy_input)
+        
+        log_info(f"Model compilation status: {'Compiled' if hasattr(model, '_is_compiled') and model._is_compiled else 'Not compiled'}")
+        log_info(f"Model has {len(model.trainable_weights)} trainable weights")
+        
+        # Create the training agent with the pre-built model
         agent = PricePredictionTrainingAgent(
             ticker=ticker,
-            feature_count=feature_count,
-            model_params=model_params
+            model=model
         )
         
         # Train the model
@@ -248,7 +274,8 @@ def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
             train_data_list=train_data_list,
             eval_data_list=eval_data_list if eval_data_list else None,
             epochs=CONFIG[EPOCHS],
-            batch_size=CONFIG[BATCH_SIZE]
+            batch_size=CONFIG[BATCH_SIZE],
+            early_stopping_patience=CONFIG[EARLY_STOPPING_PATIENCE]
         )
         training_time = time.time() - training_start
         
@@ -343,6 +370,8 @@ def main():
     parser = argparse.ArgumentParser(description='Train price prediction models')
     parser.add_argument('--tickers', nargs='+', help='List of tickers to train models for')
     parser.add_argument('--check-only', action='store_true', help='Only check data, do not train models')
+    parser.add_argument('--model-type', choices=['simple', 'cnn', 'complex'], default='simple',
+                        help='Model type to use (simple=LSTM only, cnn=CNN+LSTM, complex=CNN+LSTM with regularization)')
     args = parser.parse_args()
     
     start_time = time.time()
@@ -358,6 +387,44 @@ def main():
     # Get tickers from args or config
     tickers = args.tickers if args.tickers else CONFIG[TICKERS]
     log_info(f"Selected tickers: {tickers}")
+    
+    # Adjust model architecture based on model type argument
+    if args.model_type == 'simple':
+        # Simple LSTM model
+        CONFIG[MODEL_PARAMS].update({
+            'cnn_filters': [],                # No CNN layers
+            'cnn_kernel_sizes': [],          # No CNN layers
+            'lstm_layers': 2,                # Two LSTM layers
+            'l2_reg': 0.0,                   # No L2 regularization
+            'use_batch_norm': False,         # No batch normalization
+            'recurrent_dropout_rate': 0.0    # No recurrent dropout
+        })
+        log_info("Using simple LSTM model architecture")
+    elif args.model_type == 'cnn':
+        # CNN + LSTM model
+        CONFIG[MODEL_PARAMS].update({
+            'cnn_filters': [64, 128],        # Two CNN layers
+            'cnn_kernel_sizes': [3, 3],      # With 3x3 kernels
+            'lstm_layers': 2,                # Two LSTM layers
+            'l2_reg': 0.0,                   # No L2 regularization
+            'use_batch_norm': False,         # No batch normalization
+            'recurrent_dropout_rate': 0.0    # No recurrent dropout
+        })
+        log_info("Using CNN+LSTM model architecture")
+    elif args.model_type == 'complex':
+        # CNN + LSTM with regularization
+        CONFIG[MODEL_PARAMS].update({
+            'cnn_filters': [64, 128],        # Two CNN layers
+            'cnn_kernel_sizes': [3, 3],      # With 3x3 kernels
+            'lstm_layers': 2,                # Two LSTM layers
+            'l2_reg': 0.0001,                # Add L2 regularization
+            'use_batch_norm': True,          # Use batch normalization
+            'recurrent_dropout_rate': 0.2,   # Add recurrent dropout
+            'dropout_rate': 0.3              # Increase dropout rate
+        })
+        log_info("Using complex CNN+LSTM model architecture with regularization")
+    
+    log_info(f"Model parameters: {CONFIG[MODEL_PARAMS]}")
     
     # Load scaled historical windows
     log_section("Loading Data")
@@ -429,6 +496,7 @@ def main():
         "tickers_trained": len(results),
         "successful_trainings": sum(1 for r in results if r.get('success', False)),
         "failed_trainings": sum(1 for r in results if not r.get('success', False)),
+        "model_type": args.model_type,
         "ticker_details": {r['ticker']: {
             "success": r['success'],
             "train_windows": r['train_windows'],

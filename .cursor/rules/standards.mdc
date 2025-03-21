@@ -11,6 +11,7 @@ alwaysApply: true
 == Process ==
 - Write every code change updating one thing at a time
 - Every code change that you make will be code reviewed, try to keep code reviews small and concise so that the reviewer can understand your changes
+- Before modifying a file, check if the file has changed since the last time you saw it - I might make minor modifications to fix issues or to try other things out. Consider the latest saved version of a file as the starting point.
 - Start simple for any request, we can always come back later to make improvments
 - Don't assume requirements unless told to 'be creative'
 - Do not introduce new dependencies on third party packages unless you have exhausted all other options - when you add dependencies in changes, call it out in the chat and specify what other options were considered
