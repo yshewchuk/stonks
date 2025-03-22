@@ -24,5 +24,5 @@ alwaysApply: true
 
 == Helpful Hints ==
 - This is a windows environment - consider that when running commands
-- When running python, only the `py` command will work, `python` does not
-- When running python scripts in other folders you'll need to enable relative imports by running it like `py -m tests.test_dataframe_utils`
+- When running python, only the `py -3.12-64` command will work, `python` or `py` alone does not
+- When running python scripts in other folders you'll need to enable relative imports by running it like `py -3.12-64 -m tests.test_dataframe_utils`

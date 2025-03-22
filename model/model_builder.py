@@ -14,7 +14,8 @@ class ModelBuilder:
     - L2 regularization
     - Configurable dropout and recurrent dropout
     
-    This provides a standardized way to build models across the application.
+    This class is responsible ONLY for building models, not storing or loading them.
+    Use ModelStorageManager for storage operations.
     """
     
     def __init__(self):
@@ -43,7 +44,7 @@ class ModelBuilder:
                 - learning_rate (float): Learning rate for optimizer
                 
         Returns:
-            tf.keras.Model: A compiled TensorFlow model according to specifications
+            tf.keras.Model: A compiled TensorFlow model
             
         Raises:
             ValueError: If any required parameters are missing or invalid
@@ -157,7 +158,7 @@ class ModelBuilder:
         model.compile(
             optimizer=optimizer,
             loss='mse',  # Mean Squared Error loss for regression
-            metrics=['mse']
+            metrics=['mse', 'mae']
         )
         
         return model

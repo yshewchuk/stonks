@@ -1,8 +1,10 @@
 import pandas as pd
 import numpy as np
 import tensorflow as tf
+from typing import List, Dict, Optional, Tuple, Any, Union
 
 from model.model_data import ModelData # Import ModelData DTO
+from model.training_result import TrainingResultDTO # Import our new DTO
 
 class PricePredictionTrainingAgent:
     """
@@ -15,8 +17,9 @@ class PricePredictionTrainingAgent:
     - Evaluating the model on evaluation data
     - Calculating baseline predictions for comparison
     
-    Note: This class does not handle model creation or parameter management.
-    Models should be created externally using ModelBuilder.
+    This agent does not handle model creation, parameter management, or storage operations.
+    Models should be created externally using ModelBuilder, and storage operations 
+    should be handled by ModelStorageManager.
     """
 
     def __init__(self, ticker, model):
@@ -178,7 +181,7 @@ class PricePredictionTrainingAgent:
         return dataset
 
 
-    def train_model(self, train_data_list, eval_data_list=None, epochs=10, batch_size=32, early_stopping_patience=20):
+    def train_model(self, train_data_list, eval_data_list=None, epochs=10, batch_size=32, early_stopping_patience=20, model_dir=None, run_dir=None, run_id=None):
         """
         Trains the price prediction model using model.fit().
 
@@ -188,15 +191,27 @@ class PricePredictionTrainingAgent:
             epochs (int): Number of training epochs.
             batch_size (int): Batch size for training.
             early_stopping_patience (int): Number of epochs to wait for improvement before stopping.
+            model_dir (str, optional): Directory where the model is stored.
+            run_dir (str, optional): Directory for this training run.
+            run_id (str, optional): ID for this training run.
             
         Returns:
-            history: Training history object from model.fit().
+            TrainingResultDTO: Object containing all training results and metrics
         """
         if not isinstance(train_data_list, list) or not train_data_list or not all(isinstance(md, ModelData) for md in train_data_list):
             raise ValueError("train_data_list must be a non-empty list of ModelData objects.")
         
         if eval_data_list is not None and (not isinstance(eval_data_list, list) or not all(isinstance(md, ModelData) for md in eval_data_list)):
             raise ValueError("eval_data_list must be a list of ModelData objects.")
+
+        # Initialize our result DTO
+        result = TrainingResultDTO(
+            ticker=self.ticker,
+            run_id=run_id,
+            model_dir=model_dir,
+            run_dir=run_dir,
+            model=self.model
+        )
 
         print(f"Starting price prediction model training for ticker {self.ticker} using model.fit() with batch size {batch_size}...")
 
@@ -213,6 +228,42 @@ class PricePredictionTrainingAgent:
 
         # --- Configure Callbacks ---
         callbacks = []
+        
+        # Add ModelCheckpoint callback if run_dir is provided
+        best_model_path = None
+        if run_dir:
+            best_model_path = f"{run_dir}/best_model.keras"
+            checkpoint = tf.keras.callbacks.ModelCheckpoint(
+                filepath=best_model_path,
+                monitor='val_loss' if eval_dataset else 'loss',
+                save_best_only=True,
+                save_weights_only=False,
+                verbose=1
+            )
+            callbacks.append(checkpoint)
+            # Store the best model path in the result
+            result.best_model_path = best_model_path
+        
+        # Add TensorBoard callback if run_dir is provided
+        if run_dir:
+            log_dir = f"{run_dir}/logs"
+            tensorboard = tf.keras.callbacks.TensorBoard(
+                log_dir=log_dir,
+                histogram_freq=1,
+                write_graph=True,
+                update_freq='epoch'
+            )
+            callbacks.append(tensorboard)
+        
+        # Add CSV logger if run_dir is provided
+        if run_dir:
+            csv_path = f"{run_dir}/training_log.csv"
+            csv_logger = tf.keras.callbacks.CSVLogger(
+                csv_path,
+                separator=',',
+                append=False
+            )
+            callbacks.append(csv_logger)
         
         # Add ReduceLROnPlateau callback
         reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
@@ -248,7 +299,19 @@ class PricePredictionTrainingAgent:
 
         print("\n--- model.fit() training Complete ---")
 
+        # --- Record training metrics and results ---
+        metrics = {}
+        train_loss = history.history.get('loss', [])
+        val_loss = history.history.get('val_loss', [])
+        
+        # Record final metrics
+        metrics['final_train_loss'] = train_loss[-1] if train_loss else None
+        metrics['final_val_loss'] = val_loss[-1] if val_loss else None
+        metrics['best_val_loss'] = min(val_loss) if val_loss else None
+        metrics['best_epoch'] = val_loss.index(min(val_loss)) + 1 if val_loss else None
+        
         # --- Evaluation Loop (Baseline Comparison) ---
+        baseline_eval_metrics = {}
         if eval_dataset:
             epoch_baseline_eval_loss = 0.0
             num_eval_batches = 0
@@ -262,12 +325,45 @@ class PricePredictionTrainingAgent:
 
             if num_eval_batches > 0:
                 avg_baseline_eval_loss = epoch_baseline_eval_loss / num_eval_batches if num_eval_batches > 0 and baseline_prediction is not None else 0
+                baseline_eval_metrics['avg_baseline_loss'] = avg_baseline_eval_loss
                 print(f"\n--- Baseline Evaluation on Evaluation Set ---")
                 print(f"Baseline Evaluation completed, Avg. Baseline Eval Loss: {avg_baseline_eval_loss:.4f}")
 
-        print(f"\n--- Price Prediction Training for ticker {self.ticker} Complete ---")
-        return history # Return the training history object from model.fit()
+            # --- Generate evaluation data for best model ---
+            if eval_data_list:
+                # Evaluate the current model (might be the best model if restore_best_weights is True)
+                evaluation_df = self.evaluate_model(eval_data_list, batch_size)
+                
+                if not evaluation_df.empty:
+                    # Calculate and save metrics
+                    expected_cols = [col for col in evaluation_df.columns if col.startswith('Expected_')]
+                    predicted_cols = [col for col in evaluation_df.columns if col.startswith('Predicted_')]
+                    
+                    # Calculate MSE for each PPC
+                    feature_metrics = {}
+                    for expected_col, predicted_col in zip(expected_cols, predicted_cols):
+                        feature_name = expected_col.replace('Expected_', '')
+                        feature_metrics[f"MSE_{feature_name}"] = float(((evaluation_df[expected_col] - evaluation_df[predicted_col])**2).mean())
+                    
+                    # Calculate overall MSE
+                    expected_values = evaluation_df[expected_cols].values
+                    predicted_values = evaluation_df[predicted_cols].values
+                    feature_metrics["Overall_MSE"] = float(((expected_values - predicted_values)**2).mean())
+                    
+                    # Save metrics
+                    metrics['evaluation'] = feature_metrics
+                    
+                    # Save evaluation DataFrame in the result
+                    result.evaluation_df = evaluation_df
 
+        print(f"\n--- Price Prediction Training for ticker {self.ticker} Complete ---")
+        
+        # Populate the TrainingResultDTO with all results
+        result.history = history.history
+        result.metrics = metrics
+        result.baseline_metrics = baseline_eval_metrics
+        
+        return result
 
     def evaluate_model(self, eval_data_list, batch_size=32):
         """
@@ -330,97 +426,3 @@ class PricePredictionTrainingAgent:
 
         print(f"\n--- Price Prediction Evaluation for ticker {self.ticker} Complete, average loss after evaluation: {loss_value:.4f} ---")
         return evaluation_df
-
-
-# Example Usage (for testing PricePredictionTrainingAgent)
-if __name__ == '__main__':
-    # --- Sample Data (Adapt your DataManager and ModelData creation here) ---
-    # For now, creating dummy ModelData list similar to previous simulation example
-    dates = pd.to_datetime(['2012-08-01', '2012-08-02', '2012-08-03', '2012-08-06', '2012-08-07', '2012-08-08', '2012-08-09', '2012-08-10'] * 60) # 60 days per window * num_windows
-    dates.sort_values(inplace=True)
-    dates = dates.unique()
-    ticker = 'AAPL' # Train for a single ticker
-    tickers = [ticker] # Ticker list for DataManager compatibility
-    
-    # Create flat columns for historical data (multi-level still expected here)
-    columns_historical = pd.MultiIndex.from_product([tickers, ['Open', 'High', 'Low', 'Close', 'Volume', 'MA5', 'MA20']], names=['Ticker', 'OHLCV'])
-    
-    # Create flat columns for complete data (single-level now)
-    columns_complete = ['Open', 'High', 'Low', 'Close', 'Volume', 'MA5', 'MA20'] + [f'PPC_{i}' for i in range(21)]
-    
-    num_windows = 20 # Example number of ModelData windows - increased for train/eval split
-
-    model_data_list = []
-    for i in range(num_windows):
-        start_date_index = i * 30 # Overlapping windows for example, adjust as needed
-        end_date_index = start_date_index + 60 # Window size 60 days
-
-        window_dates = dates[start_date_index:end_date_index]
-        if len(window_dates) < 60: # Ensure enough dates in window
-            continue # Skip if not enough dates
-
-        historical_data_values = np.random.rand(len(window_dates), len(tickers) * 7) # Dummy historical data
-        complete_data_values = np.random.rand(len(window_dates), len(columns_complete)) # Dummy complete data including PPC cols
-
-        historical_data_df = pd.DataFrame(historical_data_values, index=window_dates, columns=columns_historical)
-        complete_data_df = pd.DataFrame(complete_data_values, index=window_dates, columns=columns_complete)
-        historical_data_df.index.name = 'Date'
-        complete_data_df.index.name = 'Date'
-
-        model_data = ModelData(historical_data_df, complete_data_df, tickers, start_date=window_dates[0], end_date=window_dates[-1]) # Added start and end dates
-        model_data_list.append(model_data)
-
-    # --- Data Splitting for Train/Eval ---
-    split_index = int(0.8 * len(model_data_list)) # 80% for training
-    train_data_list = model_data_list[:split_index]
-    eval_data_list = model_data_list[split_index:]
-
-    print(f"Training windows: {len(train_data_list)}, Evaluation windows: {len(eval_data_list)}")
-
-    # --- Create a model using ModelBuilder ---
-    feature_count = train_data_list[0].historical_data.shape[1] if train_data_list else 7 * len(tickers)
-    model_params = {
-        'n_steps': 60,
-        'n_features_total': feature_count,
-        'n_units': 64,
-        'n_output_probabilities': 21,
-        'dropout_rate': 0.3,
-        'cnn_filters': [32, 64],
-        'cnn_kernel_sizes': [3, 3],
-        'lstm_layers': 1,
-        'dense_layers': [32],
-        'activation': 'relu',
-        'recurrent_dropout_rate': 0.0,
-        'l2_reg': 0.001,
-        'learning_rate': 0.0001
-    }
-    
-    # Build the model using ModelBuilder
-    model = ModelBuilder.build_price_prediction_model(model_params)
-    print(f"Model created: {model.summary()}")
-    
-    # --- Initialize and Train PricePredictionTrainingAgent ---
-    batch_size = 64
-    agent = PricePredictionTrainingAgent(
-        ticker=ticker,
-        model=model
-    )
-    
-    history = agent.train_model(
-        train_data_list=train_data_list, 
-        eval_data_list=eval_data_list, 
-        epochs=10, 
-        batch_size=batch_size,
-        early_stopping_patience=5
-    )
-
-    print("\n--- Evaluating Model ---")
-    evaluation_df = agent.evaluate_model(eval_data_list=eval_data_list, batch_size=batch_size)
-
-    if not evaluation_df.empty:
-        print("\n--- Evaluation Results DataFrame Sample ---")
-        print(evaluation_df.sample(10).to_string())
-    else:
-        print("\nWarning: Evaluation DataFrame is empty. No predictions generated.")
-
-    print("\n--- PricePredictionTrainingAgent Run Completed ---")

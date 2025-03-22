@@ -15,15 +15,18 @@ Always uses multiprocessing for all operations to maximize performance.
 import os
 import time
 import json
+import shutil
 import argparse
 import concurrent.futures
 import multiprocessing
 from datetime import datetime, timedelta
 from pathlib import Path
+import sys
 
 import pandas as pd
 import numpy as np
 import tensorflow as tf
+from typing import List, Dict, Any, Optional
 
 from config import (
     CONFIG, OUTPUT_DIR, INPUT_DIR, MAX_WORKERS, TICKERS,
@@ -36,6 +39,7 @@ from utils.logger import log_step_start, log_step_complete, log_info, log_succes
 from model.model_data import ModelData
 from model.price_prediction_training_agent import PricePredictionTrainingAgent
 from model.model_builder import ModelBuilder
+from model.model_storage_manager import ModelStorageManager
 
 # Local constants for this script
 HISTORICAL_INPUT_DIR = 'historical_input_dir'
@@ -249,9 +253,21 @@ def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
         model_params = CONFIG[MODEL_PARAMS].copy()
         model_params['n_features_total'] = feature_count
         
+        # Create a model directory using ModelStorageManager
+        model_dir = ModelStorageManager.create_model_directory(model_params)
+        log_info(f"Created model directory: {model_dir}")
+        
+        # Create a run directory for this training run
+        run_dir, run_id = ModelStorageManager.create_run_directory(model_dir)
+        log_info(f"Created run directory: {run_dir}")
+        
         # Build the model using ModelBuilder
         log_info(f"Building model with parameters: {model_params}")
+        
         model = ModelBuilder.build_price_prediction_model(model_params)
+        
+        # Save the model architecture visualization
+        ModelStorageManager.save_model_architecture(model, model_dir)
                 
         # Initialize the model to ensure all flags are properly set
         # This creates input tensors and builds the model graph
@@ -261,94 +277,81 @@ def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
         
         log_info(f"Model compilation status: {'Compiled' if hasattr(model, '_is_compiled') and model._is_compiled else 'Not compiled'}")
         log_info(f"Model has {len(model.trainable_weights)} trainable weights")
+        log_info(f"Model directory: {model_dir}")
         
-        # Create the training agent with the pre-built model
+        # Create the training agent with just the model
         agent = PricePredictionTrainingAgent(
             ticker=ticker,
             model=model
         )
         
-        # Train the model
+        # Train the model, passing model_dir and run_dir
         training_start = time.time()
-        history = agent.train_model(
+        training_result = agent.train_model(
             train_data_list=train_data_list,
             eval_data_list=eval_data_list if eval_data_list else None,
             epochs=CONFIG[EPOCHS],
             batch_size=CONFIG[BATCH_SIZE],
-            early_stopping_patience=CONFIG[EARLY_STOPPING_PATIENCE]
+            early_stopping_patience=CONFIG[EARLY_STOPPING_PATIENCE],
+            model_dir=model_dir,
+            run_dir=run_dir,
+            run_id=run_id
         )
         training_time = time.time() - training_start
         
-        # Evaluate the model
-        evaluation_df = None
-        metrics = {}
-        
-        if eval_data_list:
-            evaluation_start = time.time()
-            evaluation_df = agent.evaluate_model(
-                eval_data_list=eval_data_list,
-                batch_size=CONFIG[BATCH_SIZE]
-            )
-            evaluation_time = time.time() - evaluation_start
-            
-            # Calculate evaluation metrics if we have results
-            if evaluation_df is not None and not evaluation_df.empty:
-                # Group columns by expectation vs prediction
-                expected_cols = [col for col in evaluation_df.columns if col.startswith('Expected_')]
-                predicted_cols = [col for col in evaluation_df.columns if col.startswith('Predicted_')]
-                
-                # Calculate MSE for each PPC
-                for expected_col, predicted_col in zip(expected_cols, predicted_cols):
-                    feature_name = expected_col.replace('Expected_', '')
-                    metrics[f"MSE_{feature_name}"] = float(((evaluation_df[expected_col] - evaluation_df[predicted_col])**2).mean())
-                
-                # Calculate overall MSE
-                expected_values = evaluation_df[expected_cols].values
-                predicted_values = evaluation_df[predicted_cols].values
-                metrics["Overall_MSE"] = float(((expected_values - predicted_values)**2).mean())
-        else:
-            evaluation_time = 0
-        
-        # Save model
+        # Save all training results using ModelStorageManager
         save_start = time.time()
-        model_path = os.path.join(ticker_output_dir, "model.keras")
-        agent.model.save(model_path)
-        
-        # Save model parameters
-        with open(os.path.join(ticker_output_dir, "model_params.json"), "w") as f:
-            json.dump(model_params, f, indent=2)
-        
-        # Save training history
-        if history:
-            history_df = pd.DataFrame(history.history)
-            history_df.to_csv(os.path.join(ticker_output_dir, "training_history.csv"))
-        
-        # Save evaluation results
-        if evaluation_df is not None and not evaluation_df.empty:
-            evaluation_df.to_csv(os.path.join(ticker_output_dir, "evaluation_results.csv"))
-            
-            # Save metrics
-            with open(os.path.join(ticker_output_dir, "evaluation_metrics.json"), "w") as f:
-                json.dump(metrics, f, indent=2)
-        
+        ModelStorageManager.save_training_run(training_result)
         save_time = time.time() - save_start
         
+        # Create a link to this model in the ticker output directory
+        ticker_model_info = {
+            "model_dir": model_dir,
+            "run_dir": run_dir,
+            "best_model_path": training_result.best_model_path,
+            "ticker": ticker,
+            "created_at": datetime.now().isoformat()
+        }
+        with open(os.path.join(ticker_output_dir, "model_info.json"), "w") as f:
+            json.dump(ticker_model_info, f, indent=2)
+        
+        # If this is the first model for this ticker, create a symlink or copy the best model
+        ticker_model_path = os.path.join(ticker_output_dir, "model.keras")
+        if training_result.best_model_path and os.path.exists(training_result.best_model_path):
+            try:
+                # Try creating a symbolic link first (Windows may require admin privileges)
+                if os.path.exists(ticker_model_path):
+                    os.remove(ticker_model_path)
+                try:
+                    os.symlink(training_result.best_model_path, ticker_model_path)
+                    log_info(f"Created symlink to best model at {ticker_model_path}")
+                except:
+                    # Fall back to copy if symlink fails
+                    shutil.copy2(training_result.best_model_path, ticker_model_path)
+                    log_info(f"Copied best model to {ticker_model_path}")
+            except Exception as e:
+                log_warning(f"Could not create model link in ticker directory: {e}")
+            
         log_success(f"Successfully trained and saved model for {ticker}")
         
-        if metrics:
-            log_info(f"Overall MSE: {metrics.get('Overall_MSE', 'N/A')}")
+        # Get metrics from the training result
+        metrics = training_result.metrics.get('evaluation', {}) if training_result.metrics else {}
+        if metrics and "Overall_MSE" in metrics:
+            log_info(f"Overall MSE: {metrics['Overall_MSE']}")
         
         # Return results
         return {
             'success': True,
             'ticker': ticker,
             'training_time': training_time,
-            'evaluation_time': evaluation_time,
             'save_time': save_time,
             'metrics': metrics,
             'train_windows': len(train_data_list),
             'eval_windows': len(eval_data_list),
-            'feature_count': feature_count
+            'feature_count': feature_count,
+            'model_dir': model_dir,
+            'run_dir': run_dir,
+            'best_model_path': training_result.best_model_path
         }
         
     except Exception as e:
@@ -469,9 +472,53 @@ def main():
         evaluation_rows
     )
     
-    # Check if we're only checking data
+    # Check-only mode: only check data, do not train models
     if args.check_only:
-        log_info("Data check completed. Use --tickers to specify which tickers to train.")
+        log_info("Check-only mode enabled. Will not train models.")
+        
+        # If specific tickers provided, check existing model info
+        for ticker in tickers:
+            ticker_output_dir = os.path.join(CONFIG[OUTPUT_DIR], ticker)
+            
+            # Check if the model directory exists
+            if os.path.exists(ticker_output_dir):
+                log_info(f"Found model directory for {ticker}: {ticker_output_dir}")
+                
+                # Check if there's a model_info.json file
+                model_info_path = os.path.join(ticker_output_dir, "model_info.json")
+                if os.path.exists(model_info_path):
+                    try:
+                        with open(model_info_path, "r") as f:
+                            model_info = json.load(f)
+                        
+                        log_info(f"Model information for {ticker}:")
+                        log_info(f"  - Model directory: {model_info.get('model_dir')}")
+                        
+                        # Generate model summary
+                        model_dir = model_info.get('model_dir')
+                        if model_dir and os.path.exists(model_dir):
+                            log_info(f"Generating model summary for {ticker}...")
+                            
+                            try:
+                                summary_info = ModelStorageManager.generate_model_summary(model_dir)
+                                log_info(f"Summary created successfully:")
+                                log_info(f"  - Total runs: {summary_info.get('total_runs')}")
+                                log_info(f"  - Valid runs: {summary_info.get('valid_runs')}")
+                                log_info(f"  - Best run: {summary_info.get('best_run_number')}")
+                                log_info(f"  - Summary path: {summary_info.get('summary_path')}")
+                            except Exception as e:
+                                log_error(f"Error generating model summary for {ticker}: {e}")
+                    except Exception as e:
+                        log_error(f"Error reading model info for {ticker}: {e}")
+                else:
+                    log_warning(f"No model information found for {ticker}")
+            else:
+                log_warning(f"No model directory found for {ticker}")
+                
+        log_step_complete(start_time, {
+            'check_only': True,
+            'tickers_checked': tickers
+        })
         return
     
     # Train models for each ticker
@@ -533,15 +580,72 @@ def main():
     
     log_step_complete(start_time)
     
-    # Print final summary
-    log_section("Training Summary")
-    for result in results:
-        ticker = result.get('ticker', 'Unknown')
-        status = "SUCCESS" if result.get('success', False) else "FAILED"
-        mse = result.get('metrics', {}).get('Overall_MSE', 'N/A')
-        train_windows = result.get('train_windows', 0)
-        eval_windows = result.get('eval_windows', 0)
-        log_info(f"  - {ticker}: {status}, MSE: {mse}, Trained on {train_windows} windows, Evaluated on {eval_windows} windows")
+    # Group results by status
+    successful_results = [result for result in results if result['success']]
+    failed_results = [result for result in results if not result['success']]
+    
+    # Print summary
+    log_section("TRAINING SUMMARY")
+    log_info(f"Total tickers processed: {len(results)}")
+    log_info(f"Successfully trained models: {len(successful_results)}")
+    log_info(f"Failed: {len(failed_results)}")
+    
+    # If there are failures, print them
+    if failed_results:
+        log_section("FAILED TICKERS")
+        for result in failed_results:
+            log_error(f"{result['ticker']}: {result['error']}")
+    
+    # Generate model summaries for each successfully trained ticker
+    if successful_results and not args.check_only:
+        log_section("GENERATING MODEL SUMMARIES")
+        summary_results = []
+        
+        for result in successful_results:
+            ticker = result['ticker']
+            model_dir = result['model_dir']
+            
+            try:
+                log_info(f"Generating summary for {ticker}...")
+                
+                # Load the best model
+                best_model_path = result.get('best_model_path')
+                if best_model_path and os.path.exists(best_model_path):
+                    model = tf.keras.models.load_model(best_model_path)
+                    
+                    # Create a training agent with the best model
+                    agent = PricePredictionTrainingAgent(
+                        ticker=ticker,
+                        model=model
+                    )
+                    
+                    # Generate and save model summary
+                    summary = ModelStorageManager.generate_model_summary(model_dir)
+                    summary_results.append({
+                        'ticker': ticker,
+                        'best_run': summary.get('best_run'),
+                        'best_mse': summary.get('best_mse'),
+                        'total_runs': summary.get('total_runs'),
+                        'summary_path': summary.get('summary_path')
+                    })
+                    
+                    log_success(f"Summary generated for {ticker}: Best MSE={summary.get('best_mse', 'N/A')}")
+                else:
+                    log_warning(f"Could not find best model for {ticker}. Skipping summary generation.")
+            except Exception as e:
+                log_error(f"Error generating summary for {ticker}: {str(e)}")
+        
+        # Print overall summary results
+        if summary_results:
+            log_section("MODEL SUMMARY RESULTS")
+            # Create a DataFrame for nice display
+            summary_df = pd.DataFrame(summary_results)
+            if not summary_df.empty:
+                summary_df = summary_df.sort_values('best_mse')
+                log_info("\nModel Performance Summary (sorted by MSE):")
+                log_info(summary_df.to_string(index=False))
+            
+    log_section("COMPLETED")
 
 if __name__ == "__main__":
     main() 
