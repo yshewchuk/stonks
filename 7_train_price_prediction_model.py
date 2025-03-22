@@ -40,6 +40,7 @@ from model.model_data import ModelData
 from model.price_prediction_training_agent import PricePredictionTrainingAgent
 from model.model_builder import ModelBuilder
 from model.model_storage_manager import ModelStorageManager
+from model.model_identifier import ModelIdentifier
 
 # Local constants for this script
 HISTORICAL_INPUT_DIR = 'historical_input_dir'
@@ -253,8 +254,20 @@ def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
         model_params = CONFIG[MODEL_PARAMS].copy()
         model_params['n_features_total'] = feature_count
         
-        # Create a model directory using ModelStorageManager
-        model_dir = ModelStorageManager.create_model_directory(model_params)
+        # Extract feature data from the first training window for model identification
+        feature_data = train_data_list[0].historical_data
+        
+        # Create training parameters dictionary
+        training_params = {
+            'batch_size': CONFIG[BATCH_SIZE]
+        }
+        
+        # Create a model directory using ModelStorageManager with feature data and training params
+        model_dir = ModelStorageManager.create_model_directory(
+            model_params=model_params,
+            feature_data=feature_data,
+            training_params=training_params
+        )
         log_info(f"Created model directory: {model_dir}")
         
         # Create a run directory for this training run

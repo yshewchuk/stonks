@@ -13,6 +13,7 @@ from datetime import datetime
 
 from model.training_result import TrainingResultDTO
 from model.model_hash_manager import ModelHashManager
+from model.model_identifier import ModelIdentifier
 
 class ModelStorageManager:
     """
@@ -31,12 +32,14 @@ class ModelStorageManager:
     DEFAULT_BASE_OUTPUT_DIR = "data/models"
     
     @staticmethod
-    def create_model_directory(model_params, base_output_dir=None):
+    def create_model_directory(model_params, feature_data=None, training_params=None, base_output_dir=None):
         """
-        Create a directory for a new model based on its parameters.
+        Create a directory for a new model based on its parameters, features, and training params.
         
         Args:
             model_params (dict): Model parameters
+            feature_data: Data containing the features used by the model (optional)
+            training_params (dict): Training parameters (optional)
             base_output_dir (str, optional): Base directory for models
             
         Returns:
@@ -49,36 +52,76 @@ class ModelStorageManager:
         # Make sure the base output directory exists
         os.makedirs(base_output_dir, exist_ok=True)
         
-        # Generate a unique hash for this model based on its parameters
-        model_hash = ModelHashManager.get_model_hash(model_params)
+        # Initialize the ModelIdentifier
+        identifier = ModelIdentifier()
         
-        # Check for hash collisions and resolve if needed
-        model_hash = ModelHashManager.resolve_hash_collision(model_hash, model_params, base_output_dir)
+        # Extract features from data if provided
+        if feature_data is not None:
+            included_features, total_features = identifier.extract_features_from_data(
+                feature_data, include_all=True
+            )
+        else:
+            # If no feature data provided, use empty feature set
+            included_features = set()
+            total_features = 0
+        
+        # Use empty training params if not provided
+        if training_params is None:
+            training_params = {'batch_size': 32}  # Default batch size
+        
+        # Generate deterministic identifier for this model
+        model_id = identifier.create_model_identifier(
+            model_params=model_params,
+            included_features=included_features,
+            total_features=total_features,
+            training_params=training_params
+        )
         
         # Create the model directory
-        model_dir = os.path.join(base_output_dir, model_hash)
+        model_dir = os.path.join(base_output_dir, model_id)
         os.makedirs(model_dir, exist_ok=True)
         
-        # Save model parameters
-        params_file = os.path.join(model_dir, "model_params.json")
-        with open(params_file, 'w') as f:
-            json.dump(model_params, f, indent=2)
-            
-        # Create a subdirectory for training runs
+        # Save model parameters to JSON file
+        params_path = os.path.join(model_dir, "model_params.json")
+        if not os.path.exists(params_path):
+            try:
+                with open(params_path, 'w') as f:
+                    json.dump(model_params, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Could not save model parameters: {e}")
+        
+        # Save feature information if applicable
+        if total_features > 0:
+            features_path = os.path.join(model_dir, "feature_info.json")
+            if not os.path.exists(features_path):
+                try:
+                    feature_info = {
+                        "total_features": total_features,
+                        "included_features": list(included_features)
+                    }
+                    with open(features_path, 'w') as f:
+                        json.dump(feature_info, f, indent=2)
+                except Exception as e:
+                    print(f"Warning: Could not save feature information: {e}")
+        
+        # Save training parameters if provided
+        if training_params:
+            training_params_path = os.path.join(model_dir, "training_params.json")
+            if not os.path.exists(training_params_path):
+                try:
+                    with open(training_params_path, 'w') as f:
+                        json.dump(training_params, f, indent=2)
+                except Exception as e:
+                    print(f"Warning: Could not save training parameters: {e}")
+        
+        # Create runs directory
         runs_dir = os.path.join(model_dir, "runs")
         os.makedirs(runs_dir, exist_ok=True)
         
-        # Save model info in a JSON file
-        model_info = {
-            "model_hash": model_hash,
-            "created_at": datetime.now().isoformat(),
-            "parameters": model_params
-        }
+        # Create visualizations directory
+        viz_dir = os.path.join(model_dir, "visualizations")
+        os.makedirs(viz_dir, exist_ok=True)
         
-        model_info_path = os.path.join(model_dir, "model_info.json")
-        with open(model_info_path, 'w') as f:
-            json.dump(model_info, f, indent=2)
-            
         return model_dir
     
     @staticmethod
