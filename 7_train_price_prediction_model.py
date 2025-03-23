@@ -218,190 +218,6 @@ def create_model_data_objects(historical_windows, ppc_data, tickers, evaluation_
         'summary': summary
     }
 
-def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
-    """
-    Train a price prediction model for a specific ticker.
-    
-    Args:
-        ticker (str): Ticker symbol
-        train_data_list (list): List of ModelData objects for training
-        eval_data_list (list): List of ModelData objects for evaluation
-        output_dir (str): Directory to save model and results
-        
-    Returns:
-        dict: Results of training including model metrics
-    """
-    log_section(f"Training Model for {ticker}")
-    log_info(f"Training data: {len(train_data_list)} windows")
-    log_info(f"Evaluation data: {len(eval_data_list)} windows")
-    
-    # Create output directory for this ticker
-    ticker_output_dir = os.path.join(output_dir, ticker)
-    os.makedirs(ticker_output_dir, exist_ok=True)
-    
-    # Check if we have enough data to train
-    if not train_data_list:
-        log_error(f"No training data available for ticker {ticker}")
-        return {
-            'success': False,
-            'ticker': ticker,
-            'error': 'No training data available',
-            'train_windows': 0,
-            'eval_windows': len(eval_data_list)
-        }
-    
-    if not eval_data_list:
-        log_warning(f"No evaluation data available for ticker {ticker}. Will train without evaluation.")
-    
-    try:
-        # Get feature count from the first window's historical data
-        feature_count = train_data_list[0].historical_data.shape[1]
-        log_info(f"Feature count: {feature_count}")
-        
-        # Update model_params with feature count
-        model_params = CONFIG[MODEL_PARAMS].copy()
-        
-        # Create training parameters dictionary
-        training_params = {
-            'batch_size': CONFIG[BATCH_SIZE],
-            'reduce_lr_patience': CONFIG[REDUCE_LR_PATIENCE]
-        }
-        
-        # Generate feature indexes - use all available features
-        feature_indexes = set(range(feature_count))
-        log_info(f"Using all {len(feature_indexes)} features for training")
-        
-        # Initialize ModelIdentifier and create model identifier
-        identifier = ModelIdentifier()
-        model_id = identifier.create_model_identifier(
-            model_parameters=model_params,
-            training_parameters=training_params,
-            selected_feature_indexes=feature_indexes
-        )
-        log_info(f"Generated model identifier: {model_id}")
-        
-        # Create a model directory using the model identifier
-        model_dir = ModelStorageManager.create_model_directory_from_identifier(
-            model_id=model_id,
-            base_output_dir=output_dir
-        )
-        log_info(f"Created model directory: {model_dir}")
-        
-        # Create a run directory for this training run
-        run_dir, run_id = ModelStorageManager.create_run_directory(model_dir)
-        log_info(f"Created run directory: {run_dir}")
-        
-        # Build the model using ModelBuilder
-        log_info(f"Building model with parameters: {model_params}")
-        
-        # Adjust model construction to use feature count instead of feature names
-        input_shape = (model_params['n_steps'], feature_count)
-        model = ModelBuilder().build_model(
-            input_shape=input_shape,
-            **model_params
-        )
-        
-        # Save the model architecture visualization
-        ModelStorageManager.save_model_architecture(model, model_dir)
-                
-        # Initialize the model to ensure all flags are properly set
-        # This creates input tensors and builds the model graph
-        log_info("Initializing model to ensure all internal flags are set")
-        dummy_input = np.zeros((1, model_params['n_steps'], feature_count))
-        _ = model(dummy_input)
-        
-        log_info(f"Model compilation status: {'Compiled' if hasattr(model, '_is_compiled') and model._is_compiled else 'Not compiled'}")
-        log_info(f"Model has {len(model.trainable_weights)} trainable weights")
-        log_info(f"Model directory: {model_dir}")
-        
-        # Create the training agent with just the model
-        agent = PricePredictionTrainingAgent(
-            ticker=ticker,
-            model=model
-        )
-        
-        # Train the model, passing model_dir and run_dir
-        training_start = time.time()
-        training_result = agent.train_model(
-            train_data_list=train_data_list,
-            eval_data_list=eval_data_list if eval_data_list else None,
-            epochs=CONFIG[EPOCHS],
-            batch_size=CONFIG[BATCH_SIZE],
-            early_stopping_patience=CONFIG[EARLY_STOPPING_PATIENCE],
-            model_dir=model_dir,
-            run_dir=run_dir,
-            run_id=run_id
-        )
-        training_time = time.time() - training_start
-        
-        # Save all training results using ModelStorageManager
-        save_start = time.time()
-        ModelStorageManager.save_training_run(training_result)
-        save_time = time.time() - save_start
-        
-        # Create a link to this model in the ticker output directory
-        ticker_model_info = {
-            "model_dir": model_dir,
-            "run_dir": run_dir,
-            "best_model_path": training_result.best_model_path,
-            "ticker": ticker,
-            "created_at": datetime.now().isoformat()
-        }
-        with open(os.path.join(ticker_output_dir, "model_info.json"), "w") as f:
-            json.dump(ticker_model_info, f, indent=2)
-        
-        # If this is the first model for this ticker, create a symlink or copy the best model
-        ticker_model_path = os.path.join(ticker_output_dir, "model.keras")
-        if training_result.best_model_path and os.path.exists(training_result.best_model_path):
-            try:
-                # Try creating a symbolic link first (Windows may require admin privileges)
-                if os.path.exists(ticker_model_path):
-                    os.remove(ticker_model_path)
-                try:
-                    os.symlink(training_result.best_model_path, ticker_model_path)
-                    log_info(f"Created symlink to best model at {ticker_model_path}")
-                except:
-                    # Fall back to copy if symlink fails
-                    shutil.copy2(training_result.best_model_path, ticker_model_path)
-                    log_info(f"Copied best model to {ticker_model_path}")
-            except Exception as e:
-                log_warning(f"Could not create model link in ticker directory: {e}")
-            
-        log_success(f"Successfully trained and saved model for {ticker}")
-        
-        # Get metrics from the training result
-        metrics = training_result.metrics.get('evaluation', {}) if training_result.metrics else {}
-        if metrics and "Overall_MSE" in metrics:
-            log_info(f"Overall MSE: {metrics['Overall_MSE']}")
-        
-        # Return results
-        return {
-            'success': True,
-            'ticker': ticker,
-            'training_time': training_time,
-            'save_time': save_time,
-            'metrics': metrics,
-            'train_windows': len(train_data_list),
-            'eval_windows': len(eval_data_list),
-            'feature_count': feature_count,
-            'model_dir': model_dir,
-            'run_dir': run_dir,
-            'best_model_path': training_result.best_model_path
-        }
-        
-    except Exception as e:
-        log_error(f"Error training model for {ticker}: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        return {
-            'success': False,
-            'ticker': ticker,
-            'error': str(e),
-            'train_windows': len(train_data_list),
-            'eval_windows': len(eval_data_list)
-        }
-
 def main():
     """Main function to train price prediction models."""
     # Parse arguments
@@ -561,11 +377,29 @@ def main():
         train_data_list = model_data_objects['train'].get(ticker, [])
         eval_data_list = model_data_objects['eval'].get(ticker, [])
         
-        ticker_result = train_model_for_ticker(
-            ticker, 
-            train_data_list, 
-            eval_data_list, 
-            CONFIG[MODEL_OUTPUT_DIR]
+        # Use the new ModelTrainingManager instead of train_model_for_ticker
+        from model.model_training_manager import ModelTrainingManager
+        
+        # Create a training manager for this ticker
+        training_manager = ModelTrainingManager(
+            ticker=ticker,
+            output_dir=CONFIG[MODEL_OUTPUT_DIR],
+            epochs=CONFIG[EPOCHS],
+            batch_size=CONFIG[BATCH_SIZE],
+            early_stopping_patience=CONFIG[EARLY_STOPPING_PATIENCE],
+            # Use the logger from this script
+            logger=None  # We'll use the logger's functions directly
+        )
+        
+        # Train using model parameters
+        ticker_result = training_manager.train_from_parameters(
+            model_params=CONFIG[MODEL_PARAMS],
+            train_data_list=train_data_list,
+            eval_data_list=eval_data_list,
+            training_params={
+                'batch_size': CONFIG[BATCH_SIZE],
+                'reduce_lr_patience': CONFIG[REDUCE_LR_PATIENCE]
+            }
         )
         
         results.append(ticker_result)
@@ -640,30 +474,23 @@ def main():
             try:
                 log_info(f"Generating summary for {ticker}...")
                 
-                # Load the best model
-                best_model_path = result.get('best_model_path')
-                if best_model_path and os.path.exists(best_model_path):
-                    model = tf.keras.models.load_model(best_model_path)
-                    
-                    # Create a training agent with the best model
-                    agent = PricePredictionTrainingAgent(
-                        ticker=ticker,
-                        model=model
-                    )
-                    
-                    # Generate and save model summary
-                    summary = ModelStorageManager.generate_model_summary(model_dir)
-                    summary_results.append({
-                        'ticker': ticker,
-                        'best_run': summary.get('best_run'),
-                        'best_mse': summary.get('best_mse'),
-                        'total_runs': summary.get('total_runs'),
-                        'summary_path': summary.get('summary_path')
-                    })
-                    
-                    log_success(f"Summary generated for {ticker}: Best MSE={summary.get('best_mse', 'N/A')}")
-                else:
-                    log_warning(f"Could not find best model for {ticker}. Skipping summary generation.")
+                # Create a training manager for this ticker
+                training_manager = ModelTrainingManager(
+                    ticker=ticker,
+                    output_dir=CONFIG[MODEL_OUTPUT_DIR]
+                )
+                
+                # Generate summary using the training manager
+                summary = training_manager.generate_summary(model_dir)
+                summary_results.append({
+                    'ticker': ticker,
+                    'best_run': summary.get('best_run_number'),
+                    'best_mse': summary.get('best_mse'),
+                    'total_runs': summary.get('total_runs'),
+                    'summary_path': summary.get('summary_path')
+                })
+                
+                log_success(f"Summary generated for {ticker}: Best MSE={summary.get('best_mse', 'N/A')}")
             except Exception as e:
                 log_error(f"Error generating summary for {ticker}: {str(e)}")
         
