@@ -1,118 +1,152 @@
 #!/usr/bin/env python
 """
-Test the ModelIdentifier class for creating deterministic model identifiers.
+Tests for the model identifier system.
 """
 
 import sys
 import os
-import numpy as np
-from pprint import pprint
+import unittest
+from pathlib import Path
+from model.model_identifier.bit_array import BitArray
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model.model_identifier import ModelIdentifier
-from model.model_builder import ModelBuilder
+from model.model_definition import ModelDefinition
 
-def test_model_identifier():
-    """Test the ModelIdentifier class."""
-    print("Testing ModelIdentifier...")
+class TestModelIdentifier(unittest.TestCase):
+    def setUp(self):
+        # Now we use feature indexes instead of feature names
+        self.feature_indexes = {0, 1, 2, 3, 4, 5}  # Using the first 6 feature indexes for testing
+        self.identifier = ModelIdentifier()  # No parameters needed for constructor
     
-    # Create a ModelIdentifier
-    identifier = ModelIdentifier()
+    def test_create_and_decode_identifier(self):
+        """Test creating and decoding a model identifier."""
+        # Test parameters
+        model_params = {
+            'cnn_layers': 2,
+            'cnn_filters': 64,
+            'cnn_kernel_size': 3,
+            'cnn_pooling': True,
+            'lstm_layers': 2,
+            'lstm_units': 128,
+            'dropout_rate': 0.2,
+            'recurrent_dropout_rate': 0.1,
+            'l2_reg': 0.01,
+            'use_batch_norm': True,
+            'learning_rate': 0.001,
+            'activation': 'relu',
+            'n_steps': 60  # Required parameter
+        }
+        
+        training_params = {
+            'batch_size': 32,
+            'reduce_lr_patience': 10
+        }
+        
+        selected_feature_indexes = {0, 2, 4}  # Using indexes instead of names
+        
+        # Create identifier
+        model_id = self.identifier.create_model_identifier(
+            model_parameters=model_params,
+            training_parameters=training_params,
+            selected_feature_indexes=selected_feature_indexes
+        )
+        
+        # Decode identifier
+        decoded = self.identifier.decode_model_identifier(model_id)
+        
+        # Verify decoded values
+        self.assertEqual(decoded['version'], 1)
+        self.assertEqual(decoded['model_parameters'], model_params)
+        self.assertEqual(decoded['training_parameters'], training_params)
+        self.assertEqual(decoded['feature_indexes'], selected_feature_indexes)
     
-    # Get default model parameters
-    model_params = ModelBuilder.get_default_model_params()
-    model_params['n_features_total'] = 330  # Add a required parameter
+    def test_invalid_features(self):
+        """Test that invalid feature indexes raise an error."""
+        model_params = {
+            'cnn_layers': 1,
+            'cnn_filters': 64,
+            'cnn_kernel_size': 3,
+            'cnn_pooling': True,
+            'lstm_layers': 2,
+            'lstm_units': 128,
+            'dropout_rate': 0.2,
+            'recurrent_dropout_rate': 0.1,
+            'l2_reg': 0.01,
+            'use_batch_norm': True,
+            'learning_rate': 0.001,
+            'activation': 'relu',
+            'n_steps': 60
+        }
+        
+        training_params = {
+            'batch_size': 32,
+            'reduce_lr_patience': 10
+        }
+        
+        # Test with invalid feature index (greater than total feature count)
+        invalid_feature_index = ModelDefinition.TOTAL_FEATURE_COUNT + 10
+        with self.assertRaises(ValueError):
+            self.identifier.create_model_identifier(
+                model_parameters=model_params,
+                training_parameters=training_params,
+                selected_feature_indexes={invalid_feature_index}
+            )
     
-    # Create some sample feature data
-    # Normally this would be the actual feature data, but we'll use a placeholder
-    fake_feature_data = np.zeros((100, 330))  # 100 samples, 330 features
+    def test_invalid_parameters(self):
+        """Test that invalid parameters raise an error."""
+        model_params = {
+            'cnn_layers': 5,  # Invalid value
+            'cnn_filters': 64,
+            'cnn_kernel_size': 3,
+            'cnn_pooling': True,
+            'lstm_layers': 2,
+            'lstm_units': 128,
+            'dropout_rate': 0.2,
+            'recurrent_dropout_rate': 0.1,
+            'l2_reg': 0.01,
+            'use_batch_norm': True,
+            'learning_rate': 0.001,
+            'activation': 'relu',
+            'n_steps': 60
+        }
+        
+        training_params = {
+            'batch_size': 32,
+            'reduce_lr_patience': 10
+        }
+        
+        selected_feature_indexes = {0, 1, 2}
+        
+        # Test with invalid parameter
+        with self.assertRaises(ValueError):
+            self.identifier.create_model_identifier(
+                model_parameters=model_params,
+                training_parameters=training_params,
+                selected_feature_indexes=selected_feature_indexes
+            )
     
-    # Extract features
-    included_features, total_features = identifier.extract_features_from_data(
-        fake_feature_data, include_all=True
-    )
+    def test_invalid_identifier(self):
+        """Test that invalid identifiers raise an error."""
+        with self.assertRaises(ValueError):
+            self.identifier.decode_model_identifier("invalid_identifier")
     
-    print(f"Total features: {total_features}")
-    print(f"Included features: {len(included_features)}")
-    
-    # Create a sample training params dict
-    training_params = {
-        'batch_size': 32,
-    }
-    
-    # Generate an identifier
-    model_id = identifier.create_model_identifier(
-        model_params=model_params,
-        included_features=included_features,
-        total_features=total_features,
-        training_params=training_params
-    )
-    
-    print(f"Generated model ID: {model_id}")
-    print(f"Model ID length: {len(model_id)}")
-    
-    # Test decoding
-    decoded = identifier.decode_model_identifier(model_id)
-    
-    print("\nDecoded model parameters:")
-    pprint(decoded['model_params'])
-    
-    print(f"\nDecoded included features count: {len(decoded['included_features'])}")
-    
-    print("\nDecoded training parameters:")
-    pprint(decoded['training_params'])
-    
-    # Test with different parameters
-    model_params2 = model_params.copy()
-    model_params2['n_units'] = 192
-    model_params2['dropout_rate'] = 0.5
-    model_params2['lstm_layers'] = 3
-    model_params2['cnn_filters'] = [32, 64]
-    model_params2['cnn_kernel_sizes'] = [3, 5]
-    
-    model_id2 = identifier.create_model_identifier(
-        model_params=model_params2,
-        included_features=included_features,
-        total_features=total_features,
-        training_params=training_params
-    )
-    
-    print(f"\nGenerated model ID with different parameters: {model_id2}")
-    
-    # Check if they're different
-    print(f"Are IDs different? {model_id != model_id2}")
-    
-    # Test with a subset of features
-    subset_features = set(range(0, 330, 2))  # Every other feature
-    
-    model_id3 = identifier.create_model_identifier(
-        model_params=model_params,
-        included_features=subset_features,
-        total_features=total_features,
-        training_params=training_params
-    )
-    
-    print(f"\nGenerated model ID with subset of features: {model_id3}")
-    print(f"Are feature-different IDs different? {model_id != model_id3}")
-    
-    # Test with different training parameters
-    training_params2 = {
-        'batch_size': 64,
-    }
-    
-    model_id4 = identifier.create_model_identifier(
-        model_params=model_params,
-        included_features=included_features,
-        total_features=total_features,
-        training_params=training_params2
-    )
-    
-    print(f"\nGenerated model ID with different training parameters: {model_id4}")
-    print(f"Are training-different IDs different? {model_id != model_id4}")
-    
-    print("\nTest completed successfully!")
-    
-if __name__ == "__main__":
-    test_model_identifier() 
+    def test_version_handling(self):
+        """Test that unsupported versions raise an error."""
+        # Create a bit array with an unsupported version
+        bits = [True] * 8  # Version 255
+        bits.extend([False] * (self.identifier.total_size - 8))
+        
+        # Convert bits to BitArray
+        bit_array = BitArray(bits)
+        
+        # Convert to base32
+        invalid_id = bit_array.to_base32()
+        
+        with self.assertRaises(ValueError):
+            self.identifier.decode_model_identifier(invalid_id)
+
+if __name__ == '__main__':
+    unittest.main() 

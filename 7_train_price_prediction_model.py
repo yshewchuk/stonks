@@ -48,8 +48,9 @@ PPC_INPUT_DIR = 'ppc_input_dir'
 EPOCHS = 'epochs'
 BATCH_SIZE = 'batch_size'
 EARLY_STOPPING_PATIENCE = 'early_stopping_patience'
+REDUCE_LR_PATIENCE = 'reduce_lr_patience'
 MODEL_PARAMS = 'model_params'
-
+MODEL_OUTPUT_DIR = 'model_output_dir'
 # Get default model parameters from ModelBuilder
 default_model_params = ModelBuilder.get_default_model_params()
 
@@ -58,25 +59,28 @@ CONFIG = CONFIG | TRAINING_EVALUATION_CONFIG | TIME_WINDOW_CONFIG | {
     HISTORICAL_INPUT_DIR: "data/6_scaled_data",
     PPC_INPUT_DIR: "data/3_merged_data",
     OUTPUT_DIR: "data/7_models",
+    MODEL_OUTPUT_DIR: "data/models",
     DESCRIPTION: "Trained price prediction models",
     STEP_NAME: "Train Price Prediction Models",
+
     # Training configuration
     EPOCHS: 1000,
     BATCH_SIZE: 32,
     EARLY_STOPPING_PATIENCE: 30,
+    REDUCE_LR_PATIENCE: 10,
     # Start with default model parameters and override specific settings
     MODEL_PARAMS: {
         **default_model_params,  # Use all defaults from ModelBuilder
         
         # Override specific parameters
         'n_steps': TIME_WINDOW_CONFIG[WINDOW_SIZE],  # Use window size from config
-        'n_units': 128,                  # Larger network than default
+        'lstm_units': 128,                  # Larger network than default
         'dropout_rate': 0.3,             # Higher dropout for better regularization
         'learning_rate': 0.001,          # Different learning rate
         
         # Basic parameters that will be overridden by --model-type argument
-        'cnn_filters': [],               # No CNN by default, override with --model-type
-        'cnn_kernel_sizes': [],          # No CNN by default, override with --model-type
+        'cnn_filters': 32,               # No CNN by default, override with --model-type
+        'cnn_kernel_size': 3,          # No CNN by default, override with --model-type
         'l2_reg': 0.0,                   # No regularization by default
         'use_batch_norm': False          # No batch normalization by default
     }
@@ -127,6 +131,10 @@ def create_model_data_objects(historical_windows, ppc_data, tickers, evaluation_
         training_cutoff_date = None
         evaluation_start_date = None
         log_warning(f"Not enough data for evaluation. Using all data for training.")
+    
+    # Check if we're using tuple column names (old style) or simpler columns (new style)
+    using_tuple_columns = isinstance(ppc_data.columns[0], tuple) if len(ppc_data.columns) > 0 else False
+    log_info(f"Data format: {'Using tuple column names' if using_tuple_columns else 'Using simple column names'}")
     
     # For each window in historical data
     for window_name, historical_df in historical_windows.items():
@@ -252,21 +260,30 @@ def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
         
         # Update model_params with feature count
         model_params = CONFIG[MODEL_PARAMS].copy()
-        model_params['n_features_total'] = feature_count
-        
-        # Extract feature data from the first training window for model identification
-        feature_data = train_data_list[0].historical_data
         
         # Create training parameters dictionary
         training_params = {
-            'batch_size': CONFIG[BATCH_SIZE]
+            'batch_size': CONFIG[BATCH_SIZE],
+            'reduce_lr_patience': CONFIG[REDUCE_LR_PATIENCE]
         }
         
-        # Create a model directory using ModelStorageManager with feature data and training params
-        model_dir = ModelStorageManager.create_model_directory(
-            model_params=model_params,
-            feature_data=feature_data,
-            training_params=training_params
+        # Generate feature indexes - use all available features
+        feature_indexes = set(range(feature_count))
+        log_info(f"Using all {len(feature_indexes)} features for training")
+        
+        # Initialize ModelIdentifier and create model identifier
+        identifier = ModelIdentifier()
+        model_id = identifier.create_model_identifier(
+            model_parameters=model_params,
+            training_parameters=training_params,
+            selected_feature_indexes=feature_indexes
+        )
+        log_info(f"Generated model identifier: {model_id}")
+        
+        # Create a model directory using the model identifier
+        model_dir = ModelStorageManager.create_model_directory_from_identifier(
+            model_id=model_id,
+            base_output_dir=output_dir
         )
         log_info(f"Created model directory: {model_dir}")
         
@@ -277,7 +294,12 @@ def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
         # Build the model using ModelBuilder
         log_info(f"Building model with parameters: {model_params}")
         
-        model = ModelBuilder.build_price_prediction_model(model_params)
+        # Adjust model construction to use feature count instead of feature names
+        input_shape = (model_params['n_steps'], feature_count)
+        model = ModelBuilder().build_model(
+            input_shape=input_shape,
+            **model_params
+        )
         
         # Save the model architecture visualization
         ModelStorageManager.save_model_architecture(model, model_dir)
@@ -285,7 +307,7 @@ def train_model_for_ticker(ticker, train_data_list, eval_data_list, output_dir):
         # Initialize the model to ensure all flags are properly set
         # This creates input tensors and builds the model graph
         log_info("Initializing model to ensure all internal flags are set")
-        dummy_input = np.zeros((1, model_params['n_steps'], model_params['n_features_total']))
+        dummy_input = np.zeros((1, model_params['n_steps'], feature_count))
         _ = model(dummy_input)
         
         log_info(f"Model compilation status: {'Compiled' if hasattr(model, '_is_compiled') and model._is_compiled else 'Not compiled'}")
@@ -408,8 +430,7 @@ def main():
     if args.model_type == 'simple':
         # Simple LSTM model
         CONFIG[MODEL_PARAMS].update({
-            'cnn_filters': [],                # No CNN layers
-            'cnn_kernel_sizes': [],          # No CNN layers
+            'cnn_layers': 0,                # No CNN layers
             'lstm_layers': 2,                # Two LSTM layers
             'l2_reg': 0.0,                   # No L2 regularization
             'use_batch_norm': False,         # No batch normalization
@@ -419,8 +440,7 @@ def main():
     elif args.model_type == 'cnn':
         # CNN + LSTM model
         CONFIG[MODEL_PARAMS].update({
-            'cnn_filters': [64, 128],        # Two CNN layers
-            'cnn_kernel_sizes': [3, 3],      # With 3x3 kernels
+            'cnn_layers': 2,
             'lstm_layers': 2,                # Two LSTM layers
             'l2_reg': 0.0,                   # No L2 regularization
             'use_batch_norm': False,         # No batch normalization
@@ -430,10 +450,9 @@ def main():
     elif args.model_type == 'complex':
         # CNN + LSTM with regularization
         CONFIG[MODEL_PARAMS].update({
-            'cnn_filters': [64, 128],        # Two CNN layers
-            'cnn_kernel_sizes': [3, 3],      # With 3x3 kernels
+            'cnn_layers': 2,
             'lstm_layers': 2,                # Two LSTM layers
-            'l2_reg': 0.0001,                # Add L2 regularization
+            'l2_reg': 0.001,                # Add L2 regularization
             'use_batch_norm': True,          # Use batch normalization
             'recurrent_dropout_rate': 0.2,   # Add recurrent dropout
             'dropout_rate': 0.3              # Increase dropout rate
@@ -546,7 +565,7 @@ def main():
             ticker, 
             train_data_list, 
             eval_data_list, 
-            CONFIG[OUTPUT_DIR]
+            CONFIG[MODEL_OUTPUT_DIR]
         )
         
         results.append(ticker_result)

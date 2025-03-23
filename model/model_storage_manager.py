@@ -14,6 +14,7 @@ from datetime import datetime
 from model.training_result import TrainingResultDTO
 from model.model_hash_manager import ModelHashManager
 from model.model_identifier import ModelIdentifier
+from model.model_definition import ModelDefinition
 
 class ModelStorageManager:
     """
@@ -52,29 +53,42 @@ class ModelStorageManager:
         # Make sure the base output directory exists
         os.makedirs(base_output_dir, exist_ok=True)
         
-        # Initialize the ModelIdentifier
-        identifier = ModelIdentifier()
-        
-        # Extract features from data if provided
+        # Extract feature indexes from data if provided
         if feature_data is not None:
-            included_features, total_features = identifier.extract_features_from_data(
-                feature_data, include_all=True
-            )
+            # Calculate total features from data
+            if hasattr(feature_data, 'shape'):
+                # If feature_data is a DataFrame or ndarray with shape attribute
+                feature_count = feature_data.shape[1] if len(feature_data.shape) > 1 else feature_data.shape[0]
+            else:
+                # Try to get data from dictionary
+                if 'data' in feature_data and hasattr(feature_data['data'], 'shape'):
+                    feature_count = feature_data['data'].shape[1] if len(feature_data['data'].shape) > 1 else feature_data['data'].shape[0]
+                else:
+                    # Default to ModelDefinition.TOTAL_FEATURE_COUNT
+                    feature_count = ModelDefinition.TOTAL_FEATURE_COUNT
+            
+            # By default, include all feature indexes
+            included_feature_indexes = set(range(feature_count))
         else:
-            # If no feature data provided, use empty feature set
-            included_features = set()
-            total_features = 0
+            # If no feature data provided, use all features up to TOTAL_FEATURE_COUNT
+            included_feature_indexes = set(range(ModelDefinition.TOTAL_FEATURE_COUNT))
         
         # Use empty training params if not provided
         if training_params is None:
-            training_params = {'batch_size': 32}  # Default batch size
+            training_params = ModelDefinition.get_default_training_parameters()
+        
+        # Validate parameters
+        model_params = ModelDefinition.validate_model_parameters(model_params)
+        training_params = ModelDefinition.validate_training_parameters(training_params)
+        
+        # Initialize the ModelIdentifier (no need to pass feature names)
+        identifier = ModelIdentifier()
         
         # Generate deterministic identifier for this model
         model_id = identifier.create_model_identifier(
-            model_params=model_params,
-            included_features=included_features,
-            total_features=total_features,
-            training_params=training_params
+            model_parameters=model_params,
+            training_parameters=training_params,
+            selected_feature_indexes=included_feature_indexes
         )
         
         # Create the model directory
@@ -91,18 +105,17 @@ class ModelStorageManager:
                 print(f"Warning: Could not save model parameters: {e}")
         
         # Save feature information if applicable
-        if total_features > 0:
-            features_path = os.path.join(model_dir, "feature_info.json")
-            if not os.path.exists(features_path):
-                try:
-                    feature_info = {
-                        "total_features": total_features,
-                        "included_features": list(included_features)
-                    }
-                    with open(features_path, 'w') as f:
-                        json.dump(feature_info, f, indent=2)
-                except Exception as e:
-                    print(f"Warning: Could not save feature information: {e}")
+        features_path = os.path.join(model_dir, "feature_info.json")
+        if not os.path.exists(features_path):
+            try:
+                feature_info = {
+                    "total_features": len(included_feature_indexes),
+                    "included_feature_indexes": list(included_feature_indexes)
+                }
+                with open(features_path, 'w') as f:
+                    json.dump(feature_info, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Could not save feature information: {e}")
         
         # Save training parameters if provided
         if training_params:
@@ -113,6 +126,78 @@ class ModelStorageManager:
                         json.dump(training_params, f, indent=2)
                 except Exception as e:
                     print(f"Warning: Could not save training parameters: {e}")
+        
+        # Create runs directory
+        runs_dir = os.path.join(model_dir, "runs")
+        os.makedirs(runs_dir, exist_ok=True)
+        
+        # Create visualizations directory
+        viz_dir = os.path.join(model_dir, "visualizations")
+        os.makedirs(viz_dir, exist_ok=True)
+        
+        return model_dir
+    
+    @staticmethod
+    def create_model_directory_from_identifier(model_id, base_output_dir=None):
+        """
+        Create a model directory from an existing model identifier.
+        
+        Args:
+            model_id (str): The model identifier string
+            base_output_dir (str, optional): Base directory for models
+            
+        Returns:
+            str: Path to the created model directory
+        """
+        # Use default output directory if none provided
+        if base_output_dir is None:
+            base_output_dir = ModelStorageManager.DEFAULT_BASE_OUTPUT_DIR
+        
+        # Make sure the base output directory exists
+        os.makedirs(base_output_dir, exist_ok=True)
+        
+        # Create the model directory
+        model_dir = os.path.join(base_output_dir, model_id)
+        os.makedirs(model_dir, exist_ok=True)
+        
+        # Decode the model identifier to get parameters and feature indexes
+        identifier = ModelIdentifier()
+        decoded = identifier.decode_model_identifier(model_id)
+        
+        model_params = decoded['model_parameters']
+        training_params = decoded['training_parameters']
+        included_feature_indexes = decoded['feature_indexes']
+        
+        # Save model parameters to JSON file
+        params_path = os.path.join(model_dir, "model_params.json")
+        if not os.path.exists(params_path):
+            try:
+                with open(params_path, 'w') as f:
+                    json.dump(model_params, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Could not save model parameters: {e}")
+        
+        # Save feature information
+        features_path = os.path.join(model_dir, "feature_info.json")
+        if not os.path.exists(features_path):
+            try:
+                feature_info = {
+                    "total_features": ModelDefinition.TOTAL_FEATURE_COUNT,
+                    "included_feature_indexes": list(included_feature_indexes)
+                }
+                with open(features_path, 'w') as f:
+                    json.dump(feature_info, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Could not save feature information: {e}")
+        
+        # Save training parameters
+        training_params_path = os.path.join(model_dir, "training_params.json")
+        if not os.path.exists(training_params_path):
+            try:
+                with open(training_params_path, 'w') as f:
+                    json.dump(training_params, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Could not save training parameters: {e}")
         
         # Create runs directory
         runs_dir = os.path.join(model_dir, "runs")
@@ -139,10 +224,10 @@ class ModelStorageManager:
         runs_dir = os.path.join(model_dir, "runs")
         os.makedirs(runs_dir, exist_ok=True)
         
-        # Create a uniquely numbered run directory
-        existing_runs = [d for d in os.listdir(runs_dir) 
-                         if os.path.isdir(os.path.join(runs_dir, d)) and d.isdigit()]
-        run_id = str(len(existing_runs) + 1).zfill(3)  # Zero-padded run ID
+        # Create a unique run ID using timestamp and a random component
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        random_suffix = str(np.random.randint(1000, 9999))  # 4-digit random number
+        run_id = f"{timestamp}_{random_suffix}"
         run_dir = os.path.join(runs_dir, run_id)
         os.makedirs(run_dir, exist_ok=True)
         
@@ -438,38 +523,29 @@ class ModelStorageManager:
         # Look for model file in best model directory from summary
         best_model_info_path = os.path.join(model_dir, "best_model_info.json")
         if os.path.exists(best_model_info_path):
-            try:
-                with open(best_model_info_path, 'r') as f:
-                    best_model_info = json.load(f)
-                    best_model_path = best_model_info.get('model_path')
-                    if best_model_path and os.path.exists(best_model_path):
-                        model = ModelStorageManager.load_model(best_model_path, custom_objects)
+            with open(best_model_info_path, 'r') as f:
+                best_model_info = json.load(f)
+                model_path = best_model_info.get('model_path')
+                if model_path and os.path.exists(model_path):
+                    try:
+                        print(f"Loading model from best model path: {model_path}")
+                        model = ModelStorageManager.load_model(model_path, custom_objects)
                         return model, model_params
-            except Exception as e:
-                print(f"Warning: Error loading best model info: {e}")
+                    except Exception as e:
+                        print(f"Warning: Error loading best model: {e}")
         
-        # Look for model file in the model directory
-        model_path = os.path.join(model_dir, "model.keras")
-        if os.path.exists(model_path):
-            model = ModelStorageManager.load_model(model_path, custom_objects)
-            return model, model_params
-            
-        # If no model file found in main directory, look in runs for best model
-        summary_path = os.path.join(model_dir, "model_summary.csv")
-        if os.path.exists(summary_path):
-            try:
-                summary_df = pd.read_csv(summary_path)
-                if not summary_df.empty:
-                    # Find the best run based on MSE
-                    best_run = summary_df.loc[summary_df['MSE'].idxmin()]
-                    best_model_path = best_run.get('Model Path')
-                    if best_model_path and os.path.exists(best_model_path):
-                        model = ModelStorageManager.load_model(best_model_path, custom_objects)
-                        return model, model_params
-            except Exception as e:
-                print(f"Warning: Error loading best model from summary: {e}")
-                
-        # If still no model found, look in the most recent run directory
+        # Look for model.keras or model.h5 in the model directory
+        for model_ext in ['.keras', '.h5']:
+            model_path = os.path.join(model_dir, f"model{model_ext}")
+            if os.path.exists(model_path):
+                try:
+                    print(f"Loading model from model directory: {model_path}")
+                    model = ModelStorageManager.load_model(model_path, custom_objects)
+                    return model, model_params
+                except Exception as e:
+                    print(f"Warning: Error loading model from model directory: {e}")
+        
+        # Look for model in runs directories
         runs_dir = os.path.join(model_dir, "runs")
         if os.path.exists(runs_dir):
             # Find all run directories
@@ -497,7 +573,35 @@ class ModelStorageManager:
         
         # If no model file found, rebuild the model from parameters
         from model.model_builder import ModelBuilder
-        model = ModelBuilder.build_price_prediction_model(model_params)
+        
+        # If we have feature info, load that too for proper input shape
+        feature_info_path = os.path.join(model_dir, "feature_info.json")
+        feature_count = None
+        if os.path.exists(feature_info_path):
+            try:
+                with open(feature_info_path, 'r') as f:
+                    feature_info = json.load(f)
+                    feature_count = feature_info.get('total_features', 0)
+            except Exception as e:
+                print(f"Warning: Error loading feature info: {e}")
+                
+        # Get time window size from model parameters or use default
+        n_steps = model_params.get('n_steps', 60)
+        
+        # Create a model builder instance
+        builder = ModelBuilder()
+        
+        # Ensure model_params has all required parameters with defaults if missing
+        default_params = ModelDefinition.get_default_model_parameters()
+        for key, value in default_params.items():
+            if key not in model_params:
+                model_params[key] = value
+        
+        # Build the model with the right input shape
+        model = builder.build_model(
+            input_shape=(n_steps, feature_count or 10),  # Default to 10 features if unknown
+            **model_params
+        )
         return model, model_params
     
     @staticmethod
