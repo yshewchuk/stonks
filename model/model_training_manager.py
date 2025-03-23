@@ -14,6 +14,8 @@ from model.model_identifier import ModelIdentifier
 from model.model_data import ModelData
 from model.price_prediction_training_agent import PricePredictionTrainingAgent
 from model.training_result import TrainingResultDTO
+from utils.logger import log_info, log_warning, log_error, log_debug, log_success
+from model.model_definition import ModelDefinition
 
 class ModelTrainingManager:
     """
@@ -30,7 +32,6 @@ class ModelTrainingManager:
         ticker: str,
         output_dir: str = "data/models",
         epochs: int = 1000,
-        batch_size: int = 32,
         early_stopping_patience: int = 30,
         logger = None
     ):
@@ -41,35 +42,53 @@ class ModelTrainingManager:
             ticker: The ticker symbol to train for
             output_dir: Directory to save model and results
             epochs: Maximum number of training epochs
-            batch_size: Batch size for training
             early_stopping_patience: Number of epochs with no improvement before stopping
-            logger: Logger instance (optional)
+            logger: Logger instance (optional, not used with new logging system)
         """
         self.ticker = ticker
         self.output_dir = output_dir
         self.epochs = epochs
-        self.batch_size = batch_size
         self.early_stopping_patience = early_stopping_patience
-        self.logger = logger
         
         # Create output directory for this ticker
         self.ticker_output_dir = os.path.join(output_dir, ticker)
         os.makedirs(self.ticker_output_dir, exist_ok=True)
     
-    def log(self, message: str, level: str = "info") -> None:
-        """Log a message if a logger is provided."""
-        if self.logger:
-            if level == "info":
-                self.logger.info(message)
-            elif level == "warning":
-                self.logger.warning(message)
-            elif level == "error":
-                self.logger.error(message)
-            elif level == "success":
-                self.logger.success(message)
-        else:
-            print(f"[{level.upper()}] {message}")
-    
+    def _filter_features(self, data_list: List[ModelData], feature_indexes: Set[int]) -> List[ModelData]:
+        """
+        Filter the features in ModelData objects to include only the selected feature indexes.
+        
+        Args:
+            data_list: List of ModelData objects to filter
+            feature_indexes: Set of feature indexes to include
+            
+        Returns:
+            List of new ModelData objects with only the selected features
+        """
+        log_info(f"Filtering features to include only {len(feature_indexes)} selected features")
+        
+        # Convert set to sorted list for consistent ordering
+        sorted_indexes = sorted(list(feature_indexes))
+        
+        filtered_data_list = []
+        for data in data_list:
+            # Extract only the selected columns from historical_data
+            filtered_historical = data.historical_data.iloc[:, sorted_indexes].copy()
+            
+            # Create a new ModelData object with the filtered data
+            filtered_data = ModelData(
+                filtered_historical,
+                data.complete_data,
+                data.tickers,
+                data.start_date,
+                data.end_date
+            )
+            
+            filtered_data_list.append(filtered_data)
+        
+        log_info(f"Original data shape: {data_list[0].historical_data.shape}, Filtered data shape: {filtered_data_list[0].historical_data.shape}")
+        return filtered_data_list
+
     def train_from_identifier(
         self,
         model_id: str,
@@ -87,16 +106,16 @@ class ModelTrainingManager:
         Returns:
             Dictionary containing training results and metrics
         """
-        self.log(f"Training model for {self.ticker} using model ID: {model_id}")
-        self.log(f"Training data: {len(train_data_list)} windows")
+        log_info(f"Training model for {self.ticker} using model ID: {model_id}")
+        log_info(f"Training data: {len(train_data_list)} windows")
         if eval_data_list:
-            self.log(f"Evaluation data: {len(eval_data_list)} windows")
+            log_info(f"Evaluation data: {len(eval_data_list)} windows")
         else:
-            self.log("No evaluation data provided. Will train without evaluation.", level="warning")
+            log_warning("No evaluation data provided. Will train without evaluation.")
         
         # Check if we have enough data to train
         if not train_data_list:
-            self.log(f"No training data available for ticker {self.ticker}", level="error")
+            log_error(f"No training data available for ticker {self.ticker}")
             return {
                 'success': False,
                 'ticker': self.ticker,
@@ -111,26 +130,34 @@ class ModelTrainingManager:
                 model_id=model_id,
                 base_output_dir=self.output_dir
             )
-            self.log(f"Created model directory: {model_dir}")
+            log_info(f"Created model directory: {model_dir}")
             
             # Create a run directory for this training run
             run_dir, run_id = ModelStorageManager.create_run_directory(model_dir)
-            self.log(f"Created run directory: {run_dir}")
+            log_info(f"Created run directory: {run_dir}")
             
             # Get feature count from the first window's historical data
             feature_count = train_data_list[0].historical_data.shape[1]
-            self.log(f"Feature count: {feature_count}")
+            log_info(f"Total available features: {feature_count}")
             
             # Decode the model identifier to get parameters
             identifier = ModelIdentifier()
             decoded = identifier.decode_model_identifier(model_id)
             model_params = decoded['model_parameters']
+            training_params = decoded['training_parameters']
+            feature_indexes = decoded['feature_indexes']
             
-            # Build the model using ModelBuilder
-            self.log(f"Building model with parameters: {model_params}")
+            log_info(f"Model uses {len(feature_indexes)}/{feature_count} features ({len(feature_indexes)/feature_count:.1%})")
             
-            # Adjust model construction to use feature count
-            input_shape = (model_params['n_steps'], feature_count)
+            # Filter the data to include only the selected features
+            filtered_train_data = self._filter_features(train_data_list, feature_indexes)
+            filtered_eval_data = self._filter_features(eval_data_list, feature_indexes) if eval_data_list else None
+            
+            # Build the model using ModelBuilder, using the filtered feature count
+            log_info(f"Building model with parameters: {model_params}")
+            
+            # Adjust model construction to use filtered feature count
+            input_shape = (model_params['n_steps'], len(feature_indexes))
             model = ModelBuilder().build_model(
                 input_shape=input_shape,
                 **model_params
@@ -140,8 +167,8 @@ class ModelTrainingManager:
             ModelStorageManager.save_model_architecture(model, model_dir)
             
             # Initialize the model to ensure all flags are properly set
-            self.log("Initializing model to ensure all internal flags are set")
-            dummy_input = np.zeros((1, model_params['n_steps'], feature_count))
+            log_info("Initializing model to ensure all internal flags are set")
+            dummy_input = np.zeros((1, model_params['n_steps'], len(feature_indexes)))
             _ = model(dummy_input)
             
             # Create the training agent with the model
@@ -153,10 +180,11 @@ class ModelTrainingManager:
             # Train the model
             training_start = time.time()
             training_result = agent.train_model(
-                train_data_list=train_data_list,
-                eval_data_list=eval_data_list,
+                train_data_list=filtered_train_data,
+                eval_data_list=filtered_eval_data,
                 epochs=self.epochs,
-                batch_size=self.batch_size,
+                batch_size=training_params['batch_size'],
+                reduce_lr_patience=training_params['reduce_lr_patience'],
                 early_stopping_patience=self.early_stopping_patience,
                 model_dir=model_dir,
                 run_dir=run_dir,
@@ -175,7 +203,9 @@ class ModelTrainingManager:
                 "run_dir": run_dir,
                 "best_model_path": training_result.best_model_path,
                 "ticker": self.ticker,
-                "created_at": datetime.now().isoformat()
+                "created_at": datetime.now().isoformat(),
+                "feature_count": len(feature_indexes),
+                "feature_indexes": list(feature_indexes)
             }
             with open(os.path.join(self.ticker_output_dir, "model_info.json"), "w") as f:
                 json.dump(ticker_model_info, f, indent=2)
@@ -189,20 +219,20 @@ class ModelTrainingManager:
                         os.remove(ticker_model_path)
                     try:
                         os.symlink(training_result.best_model_path, ticker_model_path)
-                        self.log(f"Created symlink to best model at {ticker_model_path}")
+                        log_info(f"Created symlink to best model at {ticker_model_path}")
                     except:
                         # Fall back to copy if symlink fails
                         shutil.copy2(training_result.best_model_path, ticker_model_path)
-                        self.log(f"Copied best model to {ticker_model_path}")
+                        log_info(f"Copied best model to {ticker_model_path}")
                 except Exception as e:
-                    self.log(f"Could not create model link in ticker directory: {e}", level="warning")
+                    log_warning(f"Could not create model link in ticker directory: {e}")
             
-            self.log(f"Successfully trained and saved model for {self.ticker}", level="success")
+            log_success(f"Successfully trained and saved model for {self.ticker}")
             
             # Get metrics from the training result
             metrics = training_result.metrics.get('evaluation', {}) if training_result.metrics else {}
             if metrics and "Overall_MSE" in metrics:
-                self.log(f"Overall MSE: {metrics['Overall_MSE']}")
+                log_info(f"Overall MSE: {metrics['Overall_MSE']}")
             
             # Return results
             return {
@@ -213,7 +243,9 @@ class ModelTrainingManager:
                 'metrics': metrics,
                 'train_windows': len(train_data_list),
                 'eval_windows': len(eval_data_list) if eval_data_list else 0,
-                'feature_count': feature_count,
+                'feature_count': len(feature_indexes),
+                'feature_indexes': list(feature_indexes),
+                'total_features': feature_count,
                 'model_dir': model_dir,
                 'run_dir': run_dir,
                 'best_model_path': training_result.best_model_path,
@@ -221,7 +253,7 @@ class ModelTrainingManager:
             }
             
         except Exception as e:
-            self.log(f"Error training model for {self.ticker}: {e}", level="error")
+            log_error(f"Error training model for {self.ticker}: {e}")
             import traceback
             traceback.print_exc()
             
@@ -254,7 +286,7 @@ class ModelTrainingManager:
         """
         # Check if we have enough data to train
         if not train_data_list:
-            self.log(f"No training data available for ticker {self.ticker}", level="error")
+            log_error(f"No training data available for ticker {self.ticker}")
             return {
                 'success': False,
                 'ticker': self.ticker,
@@ -265,18 +297,17 @@ class ModelTrainingManager:
         
         # Get feature count from the first window's historical data
         feature_count = train_data_list[0].historical_data.shape[1]
-        self.log(f"Feature count: {feature_count}")
+        log_info(f"Feature count: {feature_count}")
         
         # Create training parameters dictionary if not provided
         if not training_params:
-            training_params = {
-                'batch_size': self.batch_size,
-                'reduce_lr_patience': 10  # Default value
-            }
+            # Use ModelDefinition default training parameters
+            training_params = ModelDefinition.get_default_training_parameters()
+            log_info(f"Using default training parameters: {training_params}")
         
         # Generate feature indexes - use all available features
         feature_indexes = set(range(feature_count))
-        self.log(f"Using all {len(feature_indexes)} features for training")
+        log_info(f"Using all {len(feature_indexes)} features for training")
         
         # Initialize ModelIdentifier and create model identifier
         identifier = ModelIdentifier()
@@ -285,7 +316,7 @@ class ModelTrainingManager:
             training_parameters=training_params,
             selected_feature_indexes=feature_indexes
         )
-        self.log(f"Generated model identifier: {model_id}")
+        log_info(f"Generated model identifier: {model_id}")
         
         # Train using the generated model identifier
         return self.train_from_identifier(
@@ -305,12 +336,12 @@ class ModelTrainingManager:
             Dictionary containing summary information
         """
         try:
-            self.log(f"Generating summary for {self.ticker}...")
+            log_info(f"Generating summary for {self.ticker}...")
             summary = ModelStorageManager.generate_model_summary(model_dir)
-            self.log(f"Summary generated for {self.ticker}: Best MSE={summary.get('best_mse', 'N/A')}", level="success")
+            log_success(f"Summary generated for {self.ticker}: Best MSE={summary.get('best_mse', 'N/A')}")
             return summary
         except Exception as e:
-            self.log(f"Error generating summary for {self.ticker}: {e}", level="error")
+            log_error(f"Error generating summary for {self.ticker}: {e}")
             return {
                 'error': str(e)
             }
@@ -378,37 +409,43 @@ if __name__ == "__main__":
             'n_steps': 60
         }
     
+    # Example training parameters
+    training_params = {
+        'batch_size': 32,
+        'reduce_lr_patience': 10
+    }
+    
     # Create a training manager for the specified ticker
     manager = ModelTrainingManager(
         ticker=args.ticker,
         output_dir=args.output_dir,
         epochs=100,  # Use fewer epochs for testing
-        batch_size=32,
         early_stopping_patience=10
     )
     
-    print(f"Created ModelTrainingManager for {args.ticker}")
-    print(f"Loading data from {args.input_dir}")
+    log_info(f"Created ModelTrainingManager for {args.ticker}")
+    log_info(f"Loading data from {args.input_dir}")
     
     # You would normally load data here
     # For this example, we'll just show the function signature
-    print("\nTo train from parameters:")
-    print("manager.train_from_parameters(")
-    print("    model_params=model_params,")
-    print("    train_data_list=train_data_list,")
-    print("    eval_data_list=eval_data_list,")
-    print("    training_params={'batch_size': 32, 'reduce_lr_patience': 10}")
-    print(")")
+    log_info("\nTo train from parameters:")
+    log_info("manager.train_from_parameters(")
+    log_info("    model_params=model_params,")
+    log_info("    train_data_list=train_data_list,")
+    log_info("    eval_data_list=eval_data_list,")
+    log_info("    training_params={'batch_size': 32, 'reduce_lr_patience': 10}")
+    log_info(")")
     
-    print("\nOr to train from an existing model identifier:")
-    print("manager.train_from_identifier(")
-    print("    model_id='your_model_id',")
-    print("    train_data_list=train_data_list,")
-    print("    eval_data_list=eval_data_list")
-    print(")")
+    log_info("\nOr to train from an existing model identifier:")
+    log_info("manager.train_from_identifier(")
+    log_info("    model_id='your_model_id',")
+    log_info("    train_data_list=train_data_list,")
+    log_info("    eval_data_list=eval_data_list")
+    log_info(")")
     
-    print("\nAfter training, generate a summary:")
-    print("summary = manager.generate_summary('path/to/model/directory')")
+    log_info("\nAfter training, generate a summary:")
+    log_info("summary = manager.generate_summary('path/to/model/directory')")
     
-    print(f"\nModel type selected: {args.model_type}")
-    print(f"Model parameters: {model_params}") 
+    log_info(f"\nModel type selected: {args.model_type}")
+    log_debug(f"Model parameters: {model_params}")
+    log_debug(f"Training parameters: {training_params}") 

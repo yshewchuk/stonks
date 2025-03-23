@@ -15,6 +15,7 @@ from model.training_result import TrainingResultDTO
 from model.model_hash_manager import ModelHashManager
 from model.model_identifier import ModelIdentifier
 from model.model_definition import ModelDefinition
+from utils.logger import log_info, log_warning, log_error, log_debug, log_success
 
 class ModelStorageManager:
     """
@@ -102,7 +103,7 @@ class ModelStorageManager:
                 with open(params_path, 'w') as f:
                     json.dump(model_params, f, indent=2)
             except Exception as e:
-                print(f"Warning: Could not save model parameters: {e}")
+                log_warning(f"Could not save model parameters: {e}")
         
         # Save feature information if applicable
         features_path = os.path.join(model_dir, "feature_info.json")
@@ -115,7 +116,7 @@ class ModelStorageManager:
                 with open(features_path, 'w') as f:
                     json.dump(feature_info, f, indent=2)
             except Exception as e:
-                print(f"Warning: Could not save feature information: {e}")
+                log_warning(f"Could not save feature information: {e}")
         
         # Save training parameters if provided
         if training_params:
@@ -125,7 +126,7 @@ class ModelStorageManager:
                     with open(training_params_path, 'w') as f:
                         json.dump(training_params, f, indent=2)
                 except Exception as e:
-                    print(f"Warning: Could not save training parameters: {e}")
+                    log_warning(f"Could not save training parameters: {e}")
         
         # Create runs directory
         runs_dir = os.path.join(model_dir, "runs")
@@ -149,6 +150,8 @@ class ModelStorageManager:
         Returns:
             str: Path to the created model directory
         """
+        log_info(f"Creating model directory from identifier: {model_id}")
+
         # Use default output directory if none provided
         if base_output_dir is None:
             base_output_dir = ModelStorageManager.DEFAULT_BASE_OUTPUT_DIR
@@ -175,7 +178,7 @@ class ModelStorageManager:
                 with open(params_path, 'w') as f:
                     json.dump(model_params, f, indent=2)
             except Exception as e:
-                print(f"Warning: Could not save model parameters: {e}")
+                log_warning(f"Could not save model parameters: {e}")
         
         # Save feature information
         features_path = os.path.join(model_dir, "feature_info.json")
@@ -188,7 +191,7 @@ class ModelStorageManager:
                 with open(features_path, 'w') as f:
                     json.dump(feature_info, f, indent=2)
             except Exception as e:
-                print(f"Warning: Could not save feature information: {e}")
+                log_warning(f"Could not save feature information: {e}")
         
         # Save training parameters
         training_params_path = os.path.join(model_dir, "training_params.json")
@@ -197,7 +200,7 @@ class ModelStorageManager:
                 with open(training_params_path, 'w') as f:
                     json.dump(training_params, f, indent=2)
             except Exception as e:
-                print(f"Warning: Could not save training parameters: {e}")
+                log_warning(f"Could not save training parameters: {e}")
         
         # Create runs directory
         runs_dir = os.path.join(model_dir, "runs")
@@ -236,7 +239,7 @@ class ModelStorageManager:
         os.makedirs(logs_dir, exist_ok=True)
         
         # Log the run creation
-        print(f"Created training run directory: {run_dir}")
+        log_info(f"Created training run directory: {run_dir}")
         
         return run_dir, run_id
     
@@ -253,18 +256,18 @@ class ModelStorageManager:
         try:
             diagram_path = os.path.join(model_dir, "model_architecture.png")
             tf.keras.utils.plot_model(model, to_file=diagram_path, show_shapes=True, show_dtype=True, show_layer_names=True)
-            print(f"Saved model architecture diagram to {diagram_path}")
+            log_info(f"Saved model architecture diagram to {diagram_path}")
         except Exception as e:
-            print(f"Warning: Could not save model architecture diagram: {str(e)}")
+            log_warning(f"Could not save model architecture diagram: {str(e)}")
         
         # Save model architecture as a summary text file
         try:
             with open(os.path.join(model_dir, "model_summary.txt"), 'w', encoding='utf-8') as f:
                 # Redirect model.summary() to the file
                 model.summary(print_fn=lambda line: f.write(line + '\n'))
-            print(f"Saved model summary to {os.path.join(model_dir, 'model_summary.txt')}")
+            log_info(f"Saved model summary to {os.path.join(model_dir, 'model_summary.txt')}")
         except Exception as e:
-            print(f"Warning: Could not save model summary to file: {str(e)}")
+            log_warning(f"Could not save model summary to file: {str(e)}")
             # Print to console instead
             model.summary()
     
@@ -290,36 +293,36 @@ class ModelStorageManager:
         if result.model is not None and result.best_model_path:
             try:
                 result.model.save(result.best_model_path)
-                print(f"Saved model to {result.best_model_path}")
+                log_info(f"Saved model to {result.best_model_path}")
             except Exception as e:
-                print(f"Warning: Could not save model to {result.best_model_path}: {e}")
+                log_warning(f"Could not save model to {result.best_model_path}: {e}")
                 
         # Save training history
         history_path = os.path.join(result.run_dir, "history.json")
         try:
             with open(history_path, 'w') as f:
                 json.dump(result.history, f, indent=2)
-            print(f"Saved training history to {result.run_dir}/history.json")
+            log_info(f"Saved training history to {result.run_dir}/history.json")
         except Exception as e:
-            print(f"Warning: Could not save training history: {e}")
+            log_warning(f"Could not save training history: {e}")
             
         # Save metrics
         metrics_path = os.path.join(result.run_dir, "metrics.json")
         try:
             with open(metrics_path, 'w') as f:
                 json.dump(result.metrics, f, indent=2)
-            print(f"Saved metrics to {result.run_dir}/metrics.json")
+            log_info(f"Saved metrics to {result.run_dir}/metrics.json")
         except Exception as e:
-            print(f"Warning: Could not save metrics: {e}")
+            log_warning(f"Could not save metrics: {e}")
             
         # Save evaluation results if they exist
         if result.evaluation_df is not None and not result.evaluation_df.empty:
             eval_path = os.path.join(result.run_dir, "evaluation_results.csv")
             try:
                 result.evaluation_df.to_csv(eval_path, index=False)
-                print(f"Saved evaluation results to {result.run_dir}/evaluation_results.csv")
+                log_info(f"Saved evaluation results to {result.run_dir}/evaluation_results.csv")
             except Exception as e:
-                print(f"Warning: Could not save evaluation results: {e}")
+                log_warning(f"Could not save evaluation results: {e}")
                 
         # Create visualizations
         ModelStorageManager.create_training_visualizations(result, result.run_dir)
@@ -381,7 +384,7 @@ class ModelStorageManager:
             plot_path = os.path.join(run_dir, 'training_history.png')
             plt.savefig(plot_path)
             plt.close()
-            print(f"Saved training history plot to {plot_path}")
+            log_info(f"Saved training history plot to {plot_path}")
     
     @staticmethod
     def load_model(model_path: str) -> Optional[tf.keras.Model]:
@@ -395,14 +398,14 @@ class ModelStorageManager:
             The loaded model or None if loading fails
         """
         if not os.path.exists(model_path):
-            print(f"Model file not found: {model_path}")
+            log_warning(f"Model file not found: {model_path}")
             return None
             
         try:
             model = tf.keras.models.load_model(model_path)
             return model
         except Exception as e:
-            print(f"Error loading model from {model_path}: {e}")
+            log_error(f"Error loading model from {model_path}: {e}")
             return None
     
     @staticmethod
@@ -434,7 +437,7 @@ class ModelStorageManager:
                     if 'ticker' in model_params:
                         ticker = model_params['ticker']
             except Exception as e:
-                print(f"Warning: Could not load model parameters: {e}")
+                log_warning(f"Warning: Could not load model parameters: {e}")
         
         # Also check if there's a ticker in the run directory name
         run_name = os.path.basename(run_dir)
@@ -463,7 +466,7 @@ class ModelStorageManager:
                     if 'ticker' in metrics_data:
                         result.ticker = metrics_data['ticker']
             except Exception as e:
-                print(f"Warning: Could not load metrics from {metrics_path}: {e}")
+                log_warning(f"Warning: Could not load metrics from {metrics_path}: {e}")
         
         # Load history
         history_path = os.path.join(run_dir, "history.json")
@@ -472,7 +475,7 @@ class ModelStorageManager:
                 with open(history_path, 'r') as f:
                     result.history = json.load(f)
             except Exception as e:
-                print(f"Warning: Could not load history from {history_path}: {e}")
+                log_warning(f"Warning: Could not load history from {history_path}: {e}")
         
         # Load evaluation results
         eval_csv_path = os.path.join(run_dir, "evaluation_results.csv")
@@ -480,7 +483,7 @@ class ModelStorageManager:
             try:
                 result.evaluation_df = pd.read_csv(eval_csv_path)
             except Exception as e:
-                print(f"Warning: Could not load evaluation results from {eval_csv_path}: {e}")
+                log_warning(f"Warning: Could not load evaluation results from {eval_csv_path}: {e}")
         
         # Find the model file
         model_files = [f for f in os.listdir(run_dir) if f.endswith('.h5') or f.endswith('.keras')]
@@ -492,7 +495,7 @@ class ModelStorageManager:
             try:
                 result.model = ModelStorageManager.load_model(model_path)
             except Exception as e:
-                print(f"Warning: Could not load model from {model_path}: {e}")
+                log_warning(f"Warning: Could not load model from {model_path}: {e}")
         
         return result
     
@@ -528,22 +531,22 @@ class ModelStorageManager:
                 model_path = best_model_info.get('model_path')
                 if model_path and os.path.exists(model_path):
                     try:
-                        print(f"Loading model from best model path: {model_path}")
+                        log_info(f"Loading model from best model path: {model_path}")
                         model = ModelStorageManager.load_model(model_path, custom_objects)
                         return model, model_params
                     except Exception as e:
-                        print(f"Warning: Error loading best model: {e}")
+                        log_warning(f"Warning: Error loading best model: {e}")
         
         # Look for model.keras or model.h5 in the model directory
         for model_ext in ['.keras', '.h5']:
             model_path = os.path.join(model_dir, f"model{model_ext}")
             if os.path.exists(model_path):
                 try:
-                    print(f"Loading model from model directory: {model_path}")
+                    log_info(f"Loading model from model directory: {model_path}")
                     model = ModelStorageManager.load_model(model_path, custom_objects)
                     return model, model_params
                 except Exception as e:
-                    print(f"Warning: Error loading model from model directory: {e}")
+                    log_warning(f"Warning: Error loading model from model directory: {e}")
         
         # Look for model in runs directories
         runs_dir = os.path.join(model_dir, "runs")
@@ -569,7 +572,7 @@ class ModelStorageManager:
                             model = ModelStorageManager.load_model(model_path, custom_objects)
                             return model, model_params
                         except Exception as e:
-                            print(f"Warning: Error loading model from {model_path}: {e}")
+                            log_warning(f"Warning: Error loading model from {model_path}: {e}")
         
         # If no model file found, rebuild the model from parameters
         from model.model_builder import ModelBuilder
@@ -583,7 +586,7 @@ class ModelStorageManager:
                     feature_info = json.load(f)
                     feature_count = feature_info.get('total_features', 0)
             except Exception as e:
-                print(f"Warning: Error loading feature info: {e}")
+                log_warning(f"Warning: Error loading feature info: {e}")
                 
         # Get time window size from model parameters or use default
         n_steps = model_params.get('n_steps', 60)
@@ -615,7 +618,7 @@ class ModelStorageManager:
         Returns:
             Dictionary containing summary information
         """
-        print(f"Creating model summary for {model_dir}")
+        log_info(f"Creating model summary for {model_dir}")
         
         # Gather information from all run directories
         runs_data = []
@@ -637,7 +640,7 @@ class ModelStorageManager:
         if not run_dirs:
             raise ValueError(f"No training runs found in {runs_dir}")
             
-        print(f"Found {len(run_dirs)} training runs")
+        log_info(f"Found {len(run_dirs)} training runs")
             
         # Load each training run
         for run_dir in run_dirs:
@@ -666,9 +669,9 @@ class ModelStorageManager:
             best_run = min(valid_mse_runs, key=lambda x: x['MSE'])
             best_run_number = best_run['Run']
             best_mse = best_run['MSE']
-            print(f"Best run: {best_run_number} with MSE: {best_mse}")
+            log_info(f"Best run: {best_run_number} with MSE: {best_mse}")
         else:
-            print("No valid runs with MSE found")
+            log_info("No valid runs with MSE found")
             
         # Create comparative plots if we have multiple runs
         if len(runs_data) > 1:
@@ -679,9 +682,9 @@ class ModelStorageManager:
         summary_path = os.path.join(model_dir, "model_summary.csv")
         try:
             pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
-            print(f"Saved model summary to {summary_path}")
+            log_info(f"Saved model summary to {summary_path}")
         except Exception as e:
-            print(f"Warning: Error saving model summary: {e}")
+            log_warning(f"Warning: Error saving model summary: {e}")
             
         # Return summary info
         return {
@@ -871,7 +874,7 @@ class ModelStorageManager:
                     plt.plot(epochs, history['loss'], label=f'Run {run_number}')
                     has_training_loss = True
                 except (TypeError, ValueError) as e:
-                    print(f"Warning: Error plotting loss for run {run_number}: {e}")
+                    log_warning(f"Warning: Error plotting loss for run {run_number}: {e}")
         
         if has_training_loss:
             plt.title('Training Loss Progress')
@@ -892,7 +895,7 @@ class ModelStorageManager:
                     plt.plot(epochs, history['val_loss'], label=f'Run {run_number}')
                     has_val_loss = True
                 except (TypeError, ValueError) as e:
-                    print(f"Warning: Error plotting val_loss for run {run_number}: {e}")
+                    log_warning(f"Warning: Error plotting val_loss for run {run_number}: {e}")
         
         if has_val_loss:
             plt.title('Validation Loss Progress')
@@ -941,7 +944,7 @@ class ModelStorageManager:
                             plt.plot(epochs, history[mse_key], label=f'Run {run_number}')
                             has_mse = True
                         except (TypeError, ValueError) as e:
-                            print(f"Warning: Error plotting MSE for run {run_number}: {e}")
+                            log_warning(f"Warning: Error plotting MSE for run {run_number}: {e}")
                 
                 if has_mse:
                     plt.title('Training MSE Progress')
@@ -963,7 +966,7 @@ class ModelStorageManager:
                             plt.plot(epochs, history[val_mse_key], label=f'Run {run_number}')
                             has_val_mse = True
                         except (TypeError, ValueError) as e:
-                            print(f"Warning: Error plotting val_MSE for run {run_number}: {e}")
+                            log_warning(f"Warning: Error plotting val_MSE for run {run_number}: {e}")
                 
                 if has_val_mse:
                     plt.title('Validation MSE Progress')

@@ -119,6 +119,10 @@ class ModelIdentifier:
             # Extract version
             if len(bits) < self.VERSION_BITS:
                 raise ValueError("Identifier too short")
+            
+            if len(bits) > ((self.total_size + 4) / 5) * 5:
+                raise ValueError("Identifier too long")
+            
             version_bits = bits[:self.VERSION_BITS]
             version = sum((1 << i) for i, bit in enumerate(version_bits) if bit)
             
@@ -137,7 +141,7 @@ class ModelIdentifier:
             
             # Extract features
             feature_start = training_param_start + self.training_param_size
-            feature_bits = bits[feature_start:]
+            feature_bits = bits[feature_start:self.total_size]
             selected_feature_indexes = {
                 idx for idx, selected in enumerate(feature_bits)
                 if selected
@@ -157,3 +161,63 @@ class ModelIdentifier:
     def _bits_to_int(bits: List[bool]) -> int:
         """Convert a list of bits to an integer."""
         return sum((1 << i) for i, bit in enumerate(bits) if bit) 
+        
+    def print_model_identifier(self, identifier: str, verbose: bool = True) -> None:
+        """
+        Decode and print the contents of a model identifier in a readable format.
+        
+        Args:
+            identifier: Base32 encoded model identifier string
+            verbose: If True, print detailed information including all parameters
+            
+        Returns:
+            None, prints decoded information to console
+        """
+        try:
+            print(f"\nModel ID: {identifier}")
+            print(f"Length: {len(identifier)} characters")
+            
+            # Convert from base32 to get bit information
+            bits = BitArray.from_base32(identifier)
+            print(f"Bit length: {len(bits)} bits (expected {self.total_size})")
+            
+            # Decode the identifier
+            decoded = self.decode_model_identifier(identifier)
+            
+            # Print basic information
+            print(f"Version: {decoded['version']}")
+            print(f"Feature count: {len(decoded['feature_indexes'])}")
+            
+            if verbose:
+                # Print model parameters
+                print("\nModel Parameters:")
+                for param, value in decoded['model_parameters'].items():
+                    print(f"  {param}: {value}")
+                
+                # Print training parameters
+                print("\nTraining Parameters:")
+                for param, value in decoded['training_parameters'].items():
+                    print(f"  {param}: {value}")
+                
+                # Print features (abbreviated if too many)
+                print("\nSelected Feature Indexes:")
+                feature_indexes = sorted(decoded['feature_indexes'])
+                print(f"  {feature_indexes}")
+            
+            print("\nSuccessfully decoded model identifier")
+            
+        except Exception as e:
+            print(f"\nError decoding model identifier: {str(e)}")
+            
+            # Try to provide additional debug information
+            try:
+                bits = BitArray.from_base32(identifier)
+                print(f"Bit length: {len(bits)} bits (expected {self.total_size})")
+                
+                # Extract version if possible
+                if len(bits) >= self.VERSION_BITS:
+                    version_bits = bits[:self.VERSION_BITS]
+                    version = sum((1 << i) for i, bit in enumerate(version_bits) if bit)
+                    print(f"Version: {version} (expected {self.VERSION})")
+            except:
+                print("Could not extract any information from the identifier") 

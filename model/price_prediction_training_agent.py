@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import tensorflow as tf
+import time
 from typing import List, Dict, Optional, Tuple, Any, Union
 
 from model.model_data import ModelData # Import ModelData DTO
@@ -181,7 +182,7 @@ class PricePredictionTrainingAgent:
         return dataset
 
 
-    def train_model(self, train_data_list, eval_data_list=None, epochs=10, batch_size=32, early_stopping_patience=20, model_dir=None, run_dir=None, run_id=None):
+    def train_model(self, train_data_list, eval_data_list=None, epochs=10, batch_size=32, reduce_lr_patience=5, early_stopping_patience=20, model_dir=None, run_dir=None, run_id=None):
         """
         Trains the price prediction model using model.fit().
 
@@ -286,6 +287,25 @@ class PricePredictionTrainingAgent:
                 start_from_epoch=5
             )
             callbacks.append(stop_training)
+            
+        # Add timeout callback to stop training after 30 minutes
+        class TimeoutCallback(tf.keras.callbacks.Callback):
+            def __init__(self, timeout_minutes=30):
+                super().__init__()
+                self.timeout_minutes = timeout_minutes
+                self.start_time = None
+                
+            def on_train_begin(self, logs=None):
+                self.start_time = time.time()
+                
+            def on_epoch_end(self, epoch, logs=None):
+                elapsed_minutes = (time.time() - self.start_time) / 60
+                if elapsed_minutes > self.timeout_minutes:
+                    print(f"\nTimeout reached after {elapsed_minutes:.2f} minutes. Stopping training.")
+                    self.model.stop_training = True
+        
+        timeout_callback = TimeoutCallback(timeout_minutes=30)
+        callbacks.append(timeout_callback)
 
         print("\n--- Starting model.fit() training ---")
         history = self.model.fit(
@@ -310,6 +330,11 @@ class PricePredictionTrainingAgent:
         metrics['best_val_loss'] = min(val_loss) if val_loss else None
         metrics['best_epoch'] = val_loss.index(min(val_loss)) + 1 if val_loss else None
         
+        # Add information about timeout if it occurred
+        elapsed_minutes = (time.time() - timeout_callback.start_time) / 60 if timeout_callback.start_time else 0
+        metrics['training_time_minutes'] = elapsed_minutes
+        metrics['timeout_occurred'] = elapsed_minutes > timeout_callback.timeout_minutes
+
         # --- Evaluation Loop (Baseline Comparison) ---
         baseline_eval_metrics = {}
         if eval_dataset:
