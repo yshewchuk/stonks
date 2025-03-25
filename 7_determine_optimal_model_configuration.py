@@ -52,6 +52,7 @@ CROSSOVER_RATE = 'crossover_rate'
 ELITISM_COUNT = 'elitism_count'
 TOURNAMENT_SIZE = 'tournament_size'
 GENETIC_OUTPUT_DIR = 'genetic_output_dir'
+PARALLEL_PROCESSES = 'parallel_processes'
 
 # Configuration
 CONFIG = CONFIG | TRAINING_EVALUATION_CONFIG | TIME_WINDOW_CONFIG | {
@@ -61,6 +62,8 @@ CONFIG = CONFIG | TRAINING_EVALUATION_CONFIG | TIME_WINDOW_CONFIG | {
     GENETIC_OUTPUT_DIR: "data/genetic_optimization",
     DESCRIPTION: "Optimal model configurations",
     STEP_NAME: "Determine Optimal Model Configurations",
+
+    PARALLEL_PROCESSES: 2,
 
     # Training configuration
     EPOCHS: 1000,  # Fewer epochs for faster genetic evolution
@@ -270,7 +273,7 @@ def optimize_model_for_ticker(ticker, train_data_list, eval_data_list, config):
             tournament_size=config[TOURNAMENT_SIZE],
             epochs=config[EPOCHS],
             early_stopping_patience=config[EARLY_STOPPING_PATIENCE],
-            max_workers=1  # Single worker per ticker, parallelism happens at ticker level
+            max_workers=CONFIG[PARALLEL_PROCESSES]
         )
         
         # Run the optimization process

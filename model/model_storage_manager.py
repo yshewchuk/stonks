@@ -3,6 +3,9 @@ import json
 import shutil
 import pandas as pd
 import numpy as np
+# Set matplotlib backend to non-interactive to avoid tkinter issues in multithreading
+import matplotlib
+matplotlib.use('Agg')  # Must be before any other matplotlib imports
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from pathlib import Path
@@ -32,6 +35,59 @@ class ModelStorageManager:
     """
     
     DEFAULT_BASE_OUTPUT_DIR = "data/models"
+    MAX_DIR_NAME_LENGTH = 100  # Maximum length for directory names
+    FULL_ID_FILENAME = "full_model_id.txt"  # Filename to store the full model ID
+    
+    @staticmethod
+    def _create_model_directory_name(model_id, base_output_dir):
+        """
+        Creates a model directory name based on the model ID, handling truncation and collisions.
+        
+        Args:
+            model_id (str): The full model identifier
+            base_output_dir (str): Base directory for models
+            
+        Returns:
+            str: Path to the created model directory
+        """
+        # Truncate the model ID to MAX_DIR_NAME_LENGTH for the directory name
+        truncated_id = model_id[:ModelStorageManager.MAX_DIR_NAME_LENGTH]
+        
+        # Base directory path
+        base_dir_path = os.path.join(base_output_dir, truncated_id)
+        dir_path = base_dir_path
+        
+        # Check if the directory exists and resolve any collisions
+        suffix = 2
+        while os.path.exists(dir_path):
+            # Check if this is the same model ID
+            full_id_path = os.path.join(dir_path, ModelStorageManager.FULL_ID_FILENAME)
+            if os.path.exists(full_id_path):
+                try:
+                    with open(full_id_path, 'r') as f:
+                        stored_id = f.read().strip()
+                    if stored_id == model_id:
+                        # Same ID, just return this directory
+                        log_info(f"Found existing directory for model ID: {model_id}")
+                        return dir_path
+                except Exception as e:
+                    log_warning(f"Error reading stored model ID: {e}")
+            
+            # Different ID or error reading ID, create a new directory with suffix
+            dir_path = f"{base_dir_path}_{suffix}"
+            suffix += 1
+        
+        # Create the directory
+        os.makedirs(dir_path, exist_ok=True)
+        
+        # Store the full model ID in a file
+        try:
+            with open(os.path.join(dir_path, ModelStorageManager.FULL_ID_FILENAME), 'w') as f:
+                f.write(model_id)
+        except Exception as e:
+            log_warning(f"Error writing full model ID to file: {e}")
+        
+        return dir_path
     
     @staticmethod
     def create_model_directory(model_params, feature_data=None, training_params=None, base_output_dir=None):
@@ -92,9 +148,8 @@ class ModelStorageManager:
             selected_feature_indexes=included_feature_indexes
         )
         
-        # Create the model directory
-        model_dir = os.path.join(base_output_dir, model_id)
-        os.makedirs(model_dir, exist_ok=True)
+        # Create the model directory with truncation and collision handling
+        model_dir = ModelStorageManager._create_model_directory_name(model_id, base_output_dir)
         
         # Save model parameters to JSON file
         params_path = os.path.join(model_dir, "model_params.json")
@@ -159,9 +214,8 @@ class ModelStorageManager:
         # Make sure the base output directory exists
         os.makedirs(base_output_dir, exist_ok=True)
         
-        # Create the model directory
-        model_dir = os.path.join(base_output_dir, model_id)
-        os.makedirs(model_dir, exist_ok=True)
+        # Create the model directory with truncation and collision handling
+        model_dir = ModelStorageManager._create_model_directory_name(model_id, base_output_dir)
         
         # Decode the model identifier to get parameters and feature indexes
         identifier = ModelIdentifier()

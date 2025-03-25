@@ -120,7 +120,7 @@ class ModelIdentifier:
             if len(bits) < self.VERSION_BITS:
                 raise ValueError("Identifier too short")
             
-            if len(bits) > ((self.total_size + 4) / 5) * 5:
+            if len(bits) > ((self.total_size + 7) / 8) * 8:
                 raise ValueError("Identifier too long")
             
             version_bits = bits[:self.VERSION_BITS]

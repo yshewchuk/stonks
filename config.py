@@ -26,7 +26,7 @@ PERCENT_CHANGE_BOUNDS = 'percent_change_bounds'
 PERFORMANCE_CONFIG = {
     RAW_DATA_USED_COLUMNS: ['Open', 'High', 'Low', 'Close', 'Volume'],
     WINDOWS: [5, 20, 50],
-    LAG_PERIODS: [1, 2, 3, 5, 7, 9, 12, 15],
+    LAG_PERIODS: [1, 2, 3, 5, 7, 9],
     PREDICTIONS_CONFIG: [{
         START_DAYS_FUTURE: 1,
         END_DAYS_FUTURE: 3,

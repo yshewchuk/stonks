@@ -4,6 +4,10 @@ import tensorflow as tf
 import time
 from typing import List, Dict, Optional, Tuple, Any, Union
 
+# Set matplotlib backend to non-interactive to avoid tkinter issues in multithreading
+import matplotlib
+matplotlib.use('Agg')  # Must be before any other matplotlib imports
+
 from model.model_data import ModelData # Import ModelData DTO
 from model.training_result import TrainingResultDTO # Import our new DTO
 
@@ -290,7 +294,7 @@ class PricePredictionTrainingAgent:
             
         # Add timeout callback to stop training after 30 minutes
         class TimeoutCallback(tf.keras.callbacks.Callback):
-            def __init__(self, timeout_minutes=30):
+            def __init__(self, timeout_minutes=120):
                 super().__init__()
                 self.timeout_minutes = timeout_minutes
                 self.start_time = None
@@ -304,7 +308,7 @@ class PricePredictionTrainingAgent:
                     print(f"\nTimeout reached after {elapsed_minutes:.2f} minutes. Stopping training.")
                     self.model.stop_training = True
         
-        timeout_callback = TimeoutCallback(timeout_minutes=30)
+        timeout_callback = TimeoutCallback(timeout_minutes=120)
         callbacks.append(timeout_callback)
 
         print("\n--- Starting model.fit() training ---")

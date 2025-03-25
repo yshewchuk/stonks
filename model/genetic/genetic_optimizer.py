@@ -6,6 +6,10 @@ import concurrent.futures
 from typing import List, Dict, Any, Optional, Set, Tuple, Callable
 from datetime import datetime
 
+# Set matplotlib backend to non-interactive to avoid tkinter issues in multithreading
+import matplotlib
+matplotlib.use('Agg')  # Must be before any other matplotlib imports
+
 from model.model_definition import ModelDefinition
 from model.model_training_manager import ModelTrainingManager
 from model.model_identifier import ModelIdentifier

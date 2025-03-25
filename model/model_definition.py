@@ -19,7 +19,7 @@ class ModelDefinition:
     """
     
     # Total number of available features
-    TOTAL_FEATURE_COUNT = 330
+    TOTAL_FEATURE_COUNT = 700
     
     # Model parameter options and their allowed values
     MODEL_PARAMETER_OPTIONS = {
